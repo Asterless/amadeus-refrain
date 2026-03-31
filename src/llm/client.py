@@ -120,7 +120,7 @@ async def _call_api(
             input_tokens, cache_read, cache_create, hit_rate,
         )
 
-    return {"text": "".join(text_parts), "tool_uses": tool_uses}
+    return {"text": "".join(text_parts), "tool_uses": tool_uses, "input_tokens": input_tokens + cache_read + cache_create}
 
 
 class LLMClient:
