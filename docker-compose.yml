@@ -26,5 +26,6 @@ services:
     volumes:
       - ./data:/app/data
       - ./identities.md:/app/identities.md:ro
+      - ./.env:/app/.env:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
