@@ -8,9 +8,10 @@ class BotConfig(BaseModel):
     llm_base_url: str = "http://127.0.0.1:34567/v1"
     llm_api_key: str = "sk-placeholder"
     llm_model: str = "claude-sonnet-4-20250514"
+    llm_max_context_tokens: int = 200_000
+    compact_ratio: float = 0.7
 
     # Memory
-    short_term_max_rounds: int = 20
     memory_dir: str = "data/memories"
 
     # Identity
