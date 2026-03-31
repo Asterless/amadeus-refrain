@@ -32,7 +32,7 @@ pytestmark = pytest.mark.skipif(
 @pytest.fixture
 async def llm(tmp_path: object) -> LLMClient:
     long_term = LongTermMemory(memory_dir=str(tmp_path))
-    short_term = ShortTermMemory(max_rounds=5)
+    short_term = ShortTermMemory()
     group_ctx = GroupContext()
     prompt_builder = PromptBuilder(long_term=long_term, group_context=group_ctx)
 

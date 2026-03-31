@@ -36,7 +36,7 @@ async def _init() -> None:
     global _llm, _identity_mgr, _group_ctx, _short_term
 
     long_term = LongTermMemory(memory_dir=bot_config.memory_dir)
-    _short_term = ShortTermMemory(max_rounds=bot_config.short_term_max_rounds)
+    _short_term = ShortTermMemory()
     _group_ctx = GroupContext()
     prompt_builder = PromptBuilder(long_term=long_term, group_context=_group_ctx)
     short_term = _short_term
@@ -63,6 +63,8 @@ async def _init() -> None:
         prompt_builder=prompt_builder,
         short_term=short_term,
         tools=tools,
+        max_context_tokens=bot_config.llm_max_context_tokens,
+        compact_ratio=bot_config.compact_ratio,
     )
 
 
