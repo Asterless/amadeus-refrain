@@ -185,15 +185,15 @@ class LLMClient:
             })
             messages.append({"role": "assistant", "content": "好的，我已了解之前的对话内容。"})
 
-            # 群聊上下文（仅在有摘要时注入 messages）
-            if group_id:
-                ctx_text = self._prompt.build_context_message(group_id)
-                if ctx_text:
-                    messages.append({
-                        "role": "user",
-                        "content": [_cached_text(f"[群聊上下文]\n{ctx_text}")],
-                    })
-                    messages.append({"role": "assistant", "content": "好的，我已了解最近的群聊内容。"})
+        # 群聊上下文（始终注入，compact 后位于摘要之后保持前缀稳定）
+        if group_id:
+            ctx_text = self._prompt.build_context_message(group_id)
+            if ctx_text:
+                messages.append({
+                    "role": "user",
+                    "content": [_cached_text(f"[群聊上下文]\n{ctx_text}")],
+                })
+                messages.append({"role": "assistant", "content": "好的，我已了解最近的群聊内容。"})
 
         # 对话历史（完整，不截断）
         history = self._short_term.get(session_id)
