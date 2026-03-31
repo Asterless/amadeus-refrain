@@ -9,7 +9,7 @@ from src.memory.short_term import ShortTermMemory
 
 @pytest.fixture
 def short_term() -> ShortTermMemory:
-    return ShortTermMemory(max_rounds=5)
+    return ShortTermMemory()
 
 
 @pytest.fixture

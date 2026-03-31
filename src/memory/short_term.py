@@ -1,6 +1,5 @@
-"""短期记忆：每个会话保留最近 N 轮对话。"""
+"""短期记忆：每个会话累积对话历史，按需 compact。"""
 
-from collections import defaultdict, deque
 from typing import Literal, TypedDict
 
 _MAX_SESSIONS = 500
@@ -11,23 +10,60 @@ class ChatMessage(TypedDict):
     content: str
 
 
+class _SessionState:
+    __slots__ = ("last_input_tokens", "messages", "summary")
+
+    def __init__(self) -> None:
+        self.messages: list[ChatMessage] = []
+        self.summary: str = ""
+        self.last_input_tokens: int = 0
+
+
 class ShortTermMemory:
-    def __init__(self, max_rounds: int = 20) -> None:
-        self.max_rounds = max_rounds
-        # key: session_id (group_id 或 "private_{user_id}")
-        self._store: dict[str, deque[ChatMessage]] = defaultdict(
-            lambda: deque(maxlen=max_rounds * 2)  # user+assistant 各一条算一轮
-        )
+    def __init__(self) -> None:
+        self._store: dict[str, _SessionState] = {}
+
+    def _get_or_create(self, session_id: str) -> _SessionState:
+        if session_id not in self._store:
+            if len(self._store) >= _MAX_SESSIONS:
+                oldest = next(iter(self._store))
+                del self._store[oldest]
+            self._store[session_id] = _SessionState()
+        return self._store[session_id]
 
     def add(self, session_id: str, role: Literal["user", "assistant"], content: str) -> None:
-        if session_id not in self._store and len(self._store) >= _MAX_SESSIONS:
-            # 移除最早的会话
-            oldest = next(iter(self._store))
-            del self._store[oldest]
-        self._store[session_id].append(ChatMessage(role=role, content=content))
+        state = self._get_or_create(session_id)
+        state.messages.append(ChatMessage(role=role, content=content))
 
     def get(self, session_id: str) -> list[ChatMessage]:
-        return list(self._store[session_id])
+        if session_id not in self._store:
+            return []
+        return list(self._store[session_id].messages)
 
     def clear(self, session_id: str) -> None:
         self._store.pop(session_id, None)
+
+    def get_summary(self, session_id: str) -> str:
+        if session_id not in self._store:
+            return ""
+        return self._store[session_id].summary
+
+    def set_input_tokens(self, session_id: str, tokens: int) -> None:
+        if session_id in self._store:
+            self._store[session_id].last_input_tokens = tokens
+
+    def get_input_tokens(self, session_id: str) -> int:
+        if session_id not in self._store:
+            return 0
+        return self._store[session_id].last_input_tokens
+
+    def needs_compact(self, session_id: str, max_tokens: int, ratio: float) -> bool:
+        return self.get_input_tokens(session_id) > max_tokens * ratio
+
+    def compact(self, session_id: str, split: int, new_summary: str) -> None:
+        if session_id not in self._store:
+            return
+        state = self._store[session_id]
+        state.messages = state.messages[split:]
+        state.summary = new_summary
+        state.last_input_tokens = 0
