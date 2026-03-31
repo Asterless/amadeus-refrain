@@ -120,7 +120,8 @@ async def _call_api(
             input_tokens, cache_read, cache_create, hit_rate,
         )
 
-    return {"text": "".join(text_parts), "tool_uses": tool_uses, "input_tokens": input_tokens + cache_read + cache_create}
+    total_input = input_tokens + cache_read + cache_create
+    return {"text": "".join(text_parts), "tool_uses": tool_uses, "input_tokens": total_input}
 
 
 class LLMClient:
@@ -132,6 +133,8 @@ class LLMClient:
         prompt_builder: PromptBuilder,
         short_term: ShortTermMemory,
         tools: ToolRegistry,
+        max_context_tokens: int = 200_000,
+        compact_ratio: float = 0.7,
     ) -> None:
         self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120, sock_read=30))
         self._base_url = base_url
@@ -140,6 +143,8 @@ class LLMClient:
         self._prompt = prompt_builder
         self._short_term = short_term
         self._tools = tools
+        self._max_context_tokens = max_context_tokens
+        self._compact_ratio = compact_ratio
 
     async def close(self) -> None:
         await self._session.close()
@@ -163,21 +168,34 @@ class LLMClient:
         logger.info("chat | session={} user={} identity={} text={!r}", session_id, user_id, identity.id, user_text[:80])
         self._short_term.add(session_id, "user", user_text)
 
+        # compact 检查
+        if self._short_term.needs_compact(session_id, self._max_context_tokens, self._compact_ratio):
+            await self._compact(session_id)
+
         system_blocks = await self._prompt.build_blocks(identity=identity, user_id=user_id, group_id=group_id)
 
         messages: list[Any] = []
 
-        # 群聊记录 → messages 开头，带 cache_control
-        if group_id:
-            ctx_text = self._prompt.build_context_message(group_id)
-            if ctx_text:
-                messages.append({
-                    "role": "user",
-                    "content": [_cached_text(f"[群聊上下文]\n{ctx_text}")],
-                })
-                messages.append({"role": "assistant", "content": "好的，我已了解最近的群聊内容。"})
+        # 摘要 → 稳定前缀
+        summary = self._short_term.get_summary(session_id)
+        if summary:
+            messages.append({
+                "role": "user",
+                "content": [_cached_text(f"[对话摘要]\n{summary}")],
+            })
+            messages.append({"role": "assistant", "content": "好的，我已了解之前的对话内容。"})
 
-        # 对话历史：倒数第二条加 cache（之前的对话不会变）
+            # 群聊上下文（仅在有摘要时注入 messages）
+            if group_id:
+                ctx_text = self._prompt.build_context_message(group_id)
+                if ctx_text:
+                    messages.append({
+                        "role": "user",
+                        "content": [_cached_text(f"[群聊上下文]\n{ctx_text}")],
+                    })
+                    messages.append({"role": "assistant", "content": "好的，我已了解最近的群聊内容。"})
+
+        # 对话历史（完整，不截断）
         history = self._short_term.get(session_id)
         for i, msg in enumerate(history):
             m = _to_anthropic_message(msg)
@@ -198,6 +216,7 @@ class LLMClient:
                 reply = text or "..."
                 logger.info("reply | session={} len={}", session_id, len(reply))
                 self._short_term.add(session_id, "assistant", reply)
+                self._short_term.set_input_tokens(session_id, result["input_tokens"])
                 return reply
 
             for tu in tool_uses:
@@ -227,4 +246,42 @@ class LLMClient:
         result = await self._call(system_blocks, messages)
         reply = result["text"] or "..."
         self._short_term.add(session_id, "assistant", reply)
+        self._short_term.set_input_tokens(session_id, result["input_tokens"])
         return reply
+
+    async def _compact(self, session_id: str) -> None:
+        """将历史前半部分压缩成摘要。"""
+        history = self._short_term.get(session_id)
+        if len(history) < 4:
+            return  # 消息太少，不值得 compact
+
+        old_summary = self._short_term.get_summary(session_id)
+        split = len(history) // 2
+
+        # 拼装要压缩的内容
+        lines: list[str] = []
+        if old_summary:
+            lines.append(f"[之前的对话摘要]\n{old_summary}\n")
+        for msg in history[:split]:
+            role_label = "用户" if msg["role"] == "user" else "助手"
+            lines.append(f"{role_label}: {msg['content']}")
+        conversation_text = "\n".join(lines)
+
+        system = [{"type": "text", "text": (
+            "你是一个对话压缩助手。请将以下对话历史压缩成简洁的中文摘要。"
+            "保留关键信息：用户的问题、重要决策、关键结论、用户偏好。"
+            "去掉寒暄、重复内容和过程性细节。输出纯摘要文本，不要加标题或格式。"
+        )}]
+        compress_messages = [{"role": "user", "content": conversation_text}]
+
+        logger.info("compact | session={} split={}/{}", session_id, split, len(history))
+        result = await _call_api(
+            self._session, self._base_url, self._api_key, self._model,
+            system, compress_messages, max_tokens=1024,
+        )
+        new_summary = result["text"].strip()
+        if new_summary:
+            self._short_term.compact(session_id, split, new_summary)
+            logger.info("compact done | session={} summary_len={}", session_id, len(new_summary))
+        else:
+            logger.warning("compact produced empty summary | session={}", session_id)
