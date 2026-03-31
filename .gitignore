@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+dist/
+.env
+.env.local
+data/memories/*.qmd
+napcat/data/
+napcat/config/napcat_*.json
+napcat/config/onebot11_*.json
+napcat/config/passkey.json
+napcat/config/webui.json
+napcat/config/plugins/
+.pytest_cache/

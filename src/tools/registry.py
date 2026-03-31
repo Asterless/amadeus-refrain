@@ -1,0 +1,35 @@
+"""工具注册表：统一管理、查找、转换工具。"""
+
+import json
+from typing import Any
+
+from src.tools.base import Tool
+from src.tools.context import ToolContext
+
+
+class ToolRegistry:
+    def __init__(self) -> None:
+        self._tools: dict[str, Tool] = {}
+
+    def register(self, tool: Tool) -> None:
+        self._tools[tool.name] = tool
+
+    def get(self, name: str) -> Tool | None:
+        return self._tools.get(name)
+
+    def to_openai_tools(self) -> list[dict[str, Any]]:
+        return [t.to_openai_tool() for t in self._tools.values()]
+
+    async def call(self, name: str, arguments: str, ctx: ToolContext) -> str:
+        tool = self._tools.get(name)
+        if not tool:
+            return f"未知工具: {name}"
+        try:
+            kwargs: dict[str, Any] = json.loads(arguments) if arguments else {}
+            return await tool.execute(ctx, **kwargs)
+        except Exception as e:
+            return f"工具执行出错: {e}"
+
+    @property
+    def empty(self) -> bool:
+        return len(self._tools) == 0

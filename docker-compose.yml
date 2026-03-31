@@ -1,0 +1,30 @@
+services:
+  napcat:
+    image: mlikiowa/napcat-docker:latest
+    container_name: napcat
+    restart: unless-stopped
+    ports:
+      - "6099:6099"   # NapCat WebUI
+      - "29300:29300" # OneBot HTTP API
+      - "29301:29301" # OneBot WS（本地开发用）
+    volumes:
+      - ./napcat/config:/app/napcat/config
+      - ./napcat/data:/app/.config/QQ
+    environment:
+      - NAPCAT_GID=0
+      - NAPCAT_UID=0
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  bot:
+    build: .
+    container_name: qq-bot
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      - napcat
+    volumes:
+      - ./data:/app/data
+      - ./identities.md:/app/identities.md:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
