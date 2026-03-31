@@ -40,6 +40,8 @@ class HttpApiTool(Tool):
             return "拒绝访问: 不允许访问内网地址"
 
         method: str = kwargs.get("method", "GET")
+        if method not in ("GET", "POST"):
+            return f"不支持的 HTTP 方法: {method}"
         headers: dict[str, str] = kwargs.get("headers", {})
         body: dict[str, Any] | None = kwargs.get("body")
 

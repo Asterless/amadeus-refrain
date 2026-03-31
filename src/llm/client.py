@@ -70,7 +70,7 @@ async def _call_api(
     headers = {
         "Content-Type": "application/json",
         "x-api-key": api_key,
-        "anthropic-version": "2023-06-01",
+        "anthropic-version": "2024-10-22",
     }
 
     text_parts: list[str] = []
@@ -133,13 +133,16 @@ class LLMClient:
         short_term: ShortTermMemory,
         tools: ToolRegistry,
     ) -> None:
-        self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120))
+        self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120, sock_read=30))
         self._base_url = base_url
         self._api_key = api_key
         self._model = model
         self._prompt = prompt_builder
         self._short_term = short_term
         self._tools = tools
+
+    async def close(self) -> None:
+        await self._session.close()
 
     async def _call(
         self, system_blocks: list[dict[str, Any]], messages: list[Any], tools: list[dict[str, Any]] | None = None

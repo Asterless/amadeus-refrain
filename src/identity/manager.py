@@ -17,6 +17,8 @@ import aiofiles
 
 from src.identity.models import Identity, TriggerRule
 
+_MAX_OVERRIDES = 1000
+
 _SECTION_RE = re.compile(r"^##\s+(.+)$", re.MULTILINE)
 _META_RE = re.compile(r"^-\s+(\w+):\s*(.+)$")
 
@@ -94,6 +96,11 @@ class IdentityManager:
         if identity_id not in self._identities:
             return None
         self._overrides[session_id] = identity_id
+        if len(self._overrides) > _MAX_OVERRIDES:
+            # 移除最早的一半覆盖
+            to_remove = list(self._overrides.keys())[: len(self._overrides) // 2]
+            for k in to_remove:
+                del self._overrides[k]
         return self._identities[identity_id]
 
     def clear_override(self, session_id: str) -> None:

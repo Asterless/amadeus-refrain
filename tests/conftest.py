@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from src.memory.group_context import GroupContext
@@ -11,7 +13,7 @@ def short_term() -> ShortTermMemory:
 
 
 @pytest.fixture
-def long_term(tmp_path: object) -> LongTermMemory:
+def long_term(tmp_path: Path) -> LongTermMemory:
     return LongTermMemory(memory_dir=str(tmp_path))
 
 

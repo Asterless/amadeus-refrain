@@ -66,9 +66,14 @@ async def _init() -> None:
     )
 
 
+@driver.on_shutdown
+async def _shutdown() -> None:
+    await _llm.close()
+
+
 @driver.on_bot_connect
 async def _on_connect(bot: Bot) -> None:
-    """Bot 连接后拉取群历史消息，填充短期记忆和群聊上下文。"""
+    """Bot 连接后拉取群历史消息，填充群聊上下文。"""
     try:
         group_list: list[dict[str, object]] = await bot.get_group_list()
         group_ids = [str(g["group_id"]) for g in group_list]
@@ -76,9 +81,7 @@ async def _on_connect(bot: Bot) -> None:
         await load_group_history(
             napcat_url=bot_config.napcat_api_url,
             group_ids=group_ids,
-            short_term=_short_term,
             group_context=_group_ctx,
-            bot_id=str(bot.self_id),
         )
     except Exception:
         logger.exception("failed to load group history")

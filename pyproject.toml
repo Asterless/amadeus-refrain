@@ -30,6 +30,7 @@ known-first-party = ["src"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+testpaths = ["tests"]
 
 [tool.pyright]
 venvPath = "."

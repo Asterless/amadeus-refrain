@@ -1,7 +1,8 @@
 """时间工具：查询当前日期时间。"""
 
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from src.tools.base import Tool
 from src.tools.context import ToolContext
@@ -23,6 +24,6 @@ class DateTimeTool(Tool):
         return {"type": "object", "properties": {}}
 
     async def execute(self, ctx: ToolContext, **kwargs: Any) -> str:
-        now = datetime.now(tz=UTC).astimezone()
+        now = datetime.now(tz=ZoneInfo("Asia/Shanghai"))
         weekday = _WEEKDAYS[now.weekday()]
         return f"{now.strftime('%Y-%m-%d %H:%M:%S')} {weekday}"

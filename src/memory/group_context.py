@@ -3,6 +3,8 @@
 from collections import defaultdict, deque
 from typing import TypedDict
 
+_MAX_GROUPS = 200
+
 
 class GroupMessage(TypedDict):
     user_id: str
@@ -15,6 +17,10 @@ class GroupContext:
         self._store: dict[str, deque[GroupMessage]] = defaultdict(lambda: deque(maxlen=max_messages))
 
     def add(self, group_id: str, user_id: str, nickname: str, content: str) -> None:
+        if group_id not in self._store and len(self._store) >= _MAX_GROUPS:
+            # 移除最早的群组
+            oldest = next(iter(self._store))
+            del self._store[oldest]
         self._store[group_id].append(GroupMessage(user_id=user_id, nickname=nickname, content=content))
 
     def get_recent(self, group_id: str, limit: int = 20) -> list[GroupMessage]:

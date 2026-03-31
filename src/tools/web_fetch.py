@@ -12,11 +12,13 @@ from src.tools.context import ToolContext
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _SPACE_RE = re.compile(r"\s+")
+_SCRIPT_STYLE_RE = re.compile(r"<(script|style)[^>]*>.*?</\1>", re.DOTALL | re.IGNORECASE)
 MAX_LENGTH = 4000
 
 
 def _is_safe_url(url: str) -> bool:
     """拒绝内网/本机地址，防止 SSRF。"""
+    import socket
     try:
         parsed = urlparse(url)
         hostname = parsed.hostname or ""
@@ -24,11 +26,16 @@ def _is_safe_url(url: str) -> bool:
             return False
         if hostname in ("localhost", "host.docker.internal", "napcat"):
             return False
+        # 解析域名，检查所有 IP 是否为公网地址
         try:
-            addr = ipaddress.ip_address(hostname)
-            return addr.is_global
-        except ValueError:
-            return True  # 域名，允许
+            addrinfos = socket.getaddrinfo(hostname, None)
+            for _, _, _, _, sockaddr in addrinfos:
+                addr = ipaddress.ip_address(sockaddr[0])
+                if not addr.is_global:
+                    return False
+            return bool(addrinfos)
+        except socket.gaierror:
+            return False
     except Exception:
         return False
 
@@ -61,7 +68,8 @@ class WebFetchTool(Tool):
             resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0 QQBot/1.0"})
             resp.raise_for_status()
 
-        text = _TAG_RE.sub(" ", resp.text)
+        text = _SCRIPT_STYLE_RE.sub(" ", resp.text)
+        text = _TAG_RE.sub(" ", text)
         text = _SPACE_RE.sub(" ", text).strip()
 
         if len(text) > MAX_LENGTH:

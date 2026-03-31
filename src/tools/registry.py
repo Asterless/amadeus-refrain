@@ -3,6 +3,8 @@
 import json
 from typing import Any
 
+from loguru import logger
+
 from src.tools.base import Tool
 from src.tools.context import ToolContext
 
@@ -27,8 +29,9 @@ class ToolRegistry:
         try:
             kwargs: dict[str, Any] = json.loads(arguments) if arguments else {}
             return await tool.execute(ctx, **kwargs)
-        except Exception as e:
-            return f"工具执行出错: {e}"
+        except Exception:
+            logger.exception("tool error | name={}", name)
+            return "工具执行出错，请稍后重试"
 
     @property
     def empty(self) -> bool:
