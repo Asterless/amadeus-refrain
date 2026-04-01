@@ -76,6 +76,22 @@ def _to_anthropic_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
+_PASS_TURN_TOOL: dict[str, Any] = {
+    "name": "pass_turn",
+    "description": "当你认为不需要回复时调用此工具，跳过本轮发言。",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "reason": {
+                "type": "string",
+                "description": "不回复的简短原因",
+            }
+        },
+        "required": ["reason"],
+    },
+}
+
+
 async def _call_api(
     session: aiohttp.ClientSession,
     base_url: str,
@@ -170,9 +186,6 @@ class LLMClient:
         compact_ratio: float = 0.7,
         group_timeline: GroupTimeline | None = None,
         long_term: LongTermMemory | None = None,
-        warm_enabled: bool = True,
-        warm_interval_messages: int = 10,
-        warm_ttl_seconds: int = 300,
         bot_self_id: str = "",
     ) -> None:
         connector = aiohttp.TCPConnector(
@@ -193,10 +206,6 @@ class LLMClient:
         self._compact_ratio = compact_ratio
         self._timeline = group_timeline
         self._long_term = long_term
-        self._warm_enabled = warm_enabled
-        self._warm_interval = warm_interval_messages
-        self._warm_ttl = warm_ttl_seconds
-        self._warming = False
         self._bot_self_id = bot_self_id
 
     async def close(self) -> None:
@@ -277,8 +286,8 @@ class LLMClient:
         group_id: str | None = None,
         ctx: ToolContext | None = None,
         on_segment: Callable[[str], Awaitable[None]] | None = None,
-        proactive_hint: str | None = None,
-    ) -> str:
+        allow_skip: bool = False,
+    ) -> str | None:
         logger.info("chat | session={} user={} identity={} text={!r}", session_id, user_id, identity.id, user_text[:80])
         t0 = time.monotonic()
 
@@ -300,18 +309,26 @@ class LLMClient:
             identity=identity, user_id=user_id, group_id=group_id, bot_self_id=self._bot_self_id,
         )
 
-        # 主动插话：将回复对象提示作为对话消息注入，不污染 timeline
-        if proactive_hint:
-            messages.append({"role": "user", "content": proactive_hint})
-
         tool_defs: list[dict[str, Any]] | None = None
         if not self._tools.empty:
             tool_defs = _to_anthropic_tools(self._tools.to_openai_tools())
+        if allow_skip:
+            tool_defs = [*(tool_defs or []), _PASS_TURN_TOOL]
 
         for round_i in range(MAX_TOOL_ROUNDS):
             result = await self._call(system_blocks, messages, tools=tool_defs)
             text: str = result["text"]
             tool_uses: list[_ToolUse] = result["tool_uses"]
+
+            # Check for pass_turn
+            pass_turn = next((tu for tu in tool_uses if tu.name == "pass_turn"), None)
+            if pass_turn:
+                reason = pass_turn.input.get("reason", "")
+                elapsed = time.monotonic() - t0
+                logger.info("pass_turn | session={} reason={!r} elapsed={:.1f}s", session_id, reason, elapsed)
+                if is_group:
+                    self._timeline.set_input_tokens(group_id, result["input_tokens"])
+                return None
 
             if not tool_uses:
                 reply = text or "..."
@@ -495,40 +512,3 @@ class LLMClient:
                 if event:
                     await self._long_term.add_event(uid, event)
 
-    # ------------------------------------------------------------------
-    # 缓存预热
-    # ------------------------------------------------------------------
-
-    async def _warm_cache(self, group_id: str, identity: Identity, user_id: str) -> None:
-        """后台缓存预热：用 max_tokens=1 触发一次 API 调用以刷新缓存。"""
-        try:
-            system_blocks = await self._prompt.build_blocks(
-                identity=identity, user_id=user_id, group_id=group_id, bot_self_id=self._bot_self_id,
-            )
-            messages = self._build_group_messages(group_id)
-
-            tool_defs: list[dict[str, Any]] | None = None
-            if not self._tools.empty:
-                tool_defs = _to_anthropic_tools(self._tools.to_openai_tools())
-
-            await self._call(system_blocks, messages, tools=tool_defs, max_tokens=1)
-            assert self._timeline is not None
-            self._timeline.reset_warm_counter(group_id)
-            logger.info("warm_cache done | group={}", group_id)
-        except Exception:
-            logger.warning("warm_cache failed | group={}", group_id, exc_info=True)
-        finally:
-            self._warming = False
-
-    def maybe_warm(self, group_id: str, identity: Identity, user_id: str) -> bool:
-        """检查是否需要缓存预热，如果需要则启动后台任务。返回是否已触发。"""
-        if not self._warm_enabled or not self._timeline:
-            return False
-        if self._warming:
-            return False
-        if not self._timeline.should_warm(group_id, self._warm_interval, self._warm_ttl):
-            return False
-        self._warming = True
-        task = asyncio.create_task(self._warm_cache(group_id, identity, user_id))
-        task.add_done_callback(lambda _: None)  # 防止 GC 回收未 await 的 task
-        return True
