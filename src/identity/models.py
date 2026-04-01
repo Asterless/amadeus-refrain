@@ -18,3 +18,4 @@ class Identity(BaseModel):
     personality: str = Field(description="核心性格描述，会写入 System Prompt")
     trigger: TriggerRule = Field(default_factory=TriggerRule)
     priority: int = Field(default=0, description="优先级，数字越大优先级越高")
+    proactive: str | None = Field(default=None, description="主动插话判断规则，None 表示不主动插话")

@@ -197,3 +197,24 @@ model = "auto-detected-model"
     cfg = load_config(config_path=None)
 
     assert cfg.llm.model == "auto-detected-model"
+
+
+def test_proactive_config_defaults() -> None:
+    from src.config import BotConfig
+    config = BotConfig()
+    assert config.proactive.model == "claude-haiku-4-5-20251001"
+    assert config.proactive.timeout == 3.0
+    assert config.proactive.context_lines == 20
+    assert config.proactive.cooldown == 60
+
+
+def test_proactive_config_from_toml(tmp_path: Path) -> None:
+    from src.config_loader import load_config
+    toml_file = tmp_path / "config.toml"
+    toml_file.write_text(
+        '[proactive]\nmodel = "custom-model"\ntimeout = 5.0\ncooldown = 30\n'
+    )
+    config = load_config(config_path=str(toml_file))
+    assert config.proactive.model == "custom-model"
+    assert config.proactive.timeout == 5.0
+    assert config.proactive.cooldown == 30

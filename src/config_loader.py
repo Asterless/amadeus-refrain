@@ -15,6 +15,7 @@ _ENV_MAP: dict[str, str] = {
     "LLM_API_KEY": "llm.api_key",
     "LLM_MODEL": "llm.model",
     "NAPCAT_API_URL": "napcat.api_url",
+    "PROACTIVE_MODEL": "proactive.model",
 }
 
 # CLI 参数名 → dotted key（由 bot.py argparse 写入环境变量 _CLI_* 或直接传入 cli_overrides）

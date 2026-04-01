@@ -122,3 +122,26 @@ def test_keyword_priority_over_group(loaded_mgr: IdentityManager) -> None:
     """cat(priority=10) > vip(priority=5)，即使在 vip 群里。"""
     identity = loaded_mgr.resolve("s1", "999", "喵喵喵")
     assert identity.id == "cat"
+
+
+def test_parse_markdown_with_proactive() -> None:
+    md = """\
+## bot
+- name: Bot
+- proactive: 只在有人求助时插话。回答 YES 或 NO。
+
+Bot 人设。
+"""
+    identities = _parse_markdown(md)
+    assert identities[0].proactive == "只在有人求助时插话。回答 YES 或 NO。"
+
+
+def test_parse_markdown_without_proactive() -> None:
+    md = """\
+## bot
+- name: Bot
+
+Bot 人设。
+"""
+    identities = _parse_markdown(md)
+    assert identities[0].proactive is None
