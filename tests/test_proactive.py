@@ -50,13 +50,15 @@ class TestShouldEvaluate:
         ev._last_proactive["g1"] = time.monotonic() - 120  # 很久以前
         assert ev.should_evaluate("g1", identity) is True
 
-    def test_locked_group_blocks(self, timeline: GroupTimeline) -> None:
+    @pytest.mark.asyncio
+    async def test_locked_group_blocks(self, timeline: GroupTimeline) -> None:
         ev = ProactiveEvaluator(timeline=timeline, model="m", api_key="k", base_url="u")
         identity = _make_identity(proactive="随便插话")
-        ev._locks["g1"] = asyncio.Lock()
-        ev._locks["g1"]._locked = True  # 模拟锁被持有
-        # locked() 为 True 时 should_evaluate 返回 False
+        lock = asyncio.Lock()
+        await lock.acquire()
+        ev._locks["g1"] = lock
         assert ev.should_evaluate("g1", identity) is False
+        lock.release()
 
 
 class TestBuildDecisionPrompt:

@@ -37,6 +37,7 @@ class ProactiveEvaluator:
 
         self._locks: dict[str, asyncio.Lock] = {}
         self._last_proactive: dict[str, float] = {}
+        self._session: aiohttp.ClientSession | None = None
 
     # ------------------------------------------------------------------
     # 前置检查
@@ -54,10 +55,16 @@ class ProactiveEvaluator:
 
         # 已有评估/回复在进行中
         lock = self._locks.get(group_id)
-        if lock and lock.locked():
-            return False
+        return not (lock and lock.locked())
 
-        return True
+    def _get_session(self) -> aiohttp.ClientSession:
+        if self._session is None:
+            self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self._timeout))
+        return self._session
+
+    async def close(self) -> None:
+        if self._session is not None:
+            await self._session.close()
 
     # ------------------------------------------------------------------
     # 决策 prompt 构建
@@ -94,7 +101,6 @@ class ProactiveEvaluator:
         async with lock:
             system, messages = self.build_decision_prompt(group_id, identity)
 
-            timeout = aiohttp.ClientTimeout(total=self._timeout)
             body = {
                 "model": self._model,
                 "system": system,
@@ -109,25 +115,24 @@ class ProactiveEvaluator:
             }
 
             try:
-                async with aiohttp.ClientSession(timeout=timeout) as session:
-                    async with session.post(
-                        f"{self._base_url}/v1/messages", json=body, headers=headers,
-                    ) as resp:
-                        resp.raise_for_status()
-                        data = await resp.json()
-                        text = ""
-                        for block in data.get("content", []):
-                            if block.get("type") == "text":
-                                text += block.get("text", "")
-                        decision = text.strip().upper().startswith("YES")
-                        logger.info(
-                            "proactive eval | group={} decision={} raw={!r}",
-                            group_id, decision, text.strip()[:50],
-                        )
-                        if decision:
-                            self._last_proactive[group_id] = time.monotonic()
-                        return decision
-            except asyncio.TimeoutError:
+                async with self._get_session().post(
+                    f"{self._base_url}/v1/messages", json=body, headers=headers,
+                ) as resp:
+                    resp.raise_for_status()
+                    data = await resp.json()
+                    text = ""
+                    for block in data.get("content", []):
+                        if block.get("type") == "text":
+                            text += block.get("text", "")
+                    decision = text.strip().upper().startswith("YES")
+                    logger.info(
+                        "proactive eval | group={} decision={} raw={!r}",
+                        group_id, decision, text.strip()[:50],
+                    )
+                    if decision:
+                        self._last_proactive[group_id] = time.monotonic()
+                    return decision
+            except TimeoutError:
                 logger.warning("proactive eval timeout | group={}", group_id)
                 return False
             except Exception:
