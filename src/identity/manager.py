@@ -47,6 +47,7 @@ def _parse_markdown(text: str) -> list[Identity]:
 
         keywords = [k.strip() for k in meta.get("keywords", "").split(",") if k.strip()]
         groups = [g.strip() for g in meta.get("groups", "").split(",") if g.strip()]
+        proactive = meta.get("proactive")
 
         identities.append(
             Identity(
@@ -55,6 +56,7 @@ def _parse_markdown(text: str) -> list[Identity]:
                 personality="\n".join(personality_lines).strip(),
                 trigger=TriggerRule(groups=groups, keywords=keywords),
                 priority=int(meta.get("priority", "0")),
+                proactive=proactive,
             )
         )
     return identities
