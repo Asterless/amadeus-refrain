@@ -27,7 +27,7 @@ api_key = "sk-placeholder"
 
 # 模型名称
 # 环境变量: LLM_MODEL | CLI: --llm-model
-model = "claude-sonnet-4-20250514"
+model = "claude-sonnet-4-6"
 
 # 单次回复最大 token 数
 max_tokens = 1024

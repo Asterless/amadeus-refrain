@@ -23,7 +23,7 @@ class LLMConfig(BaseModel):
 
     base_url: str = "http://127.0.0.1:34567/v1"
     api_key: str = "sk-placeholder"
-    model: str = "claude-sonnet-4-20250514"
+    model: str = "claude-sonnet-4-6"
     max_tokens: int = 1024
     context: ContextConfig = ContextConfig()
     cache: CacheConfig = CacheConfig()
