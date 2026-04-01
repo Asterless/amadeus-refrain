@@ -268,6 +268,7 @@ class LLMClient:
         group_id: str | None = None,
         ctx: ToolContext | None = None,
         on_segment: Callable[[str], Awaitable[None]] | None = None,
+        proactive_hint: str | None = None,
     ) -> str:
         logger.info("chat | session={} user={} identity={} text={!r}", session_id, user_id, identity.id, user_text[:80])
         t0 = time.monotonic()
@@ -287,6 +288,10 @@ class LLMClient:
             messages = self._build_private_messages(session_id)
 
         system_blocks = await self._prompt.build_blocks(identity=identity, user_id=user_id, group_id=group_id)
+
+        # 主动插话：将回复对象提示作为对话消息注入，不污染 timeline
+        if proactive_hint:
+            messages.append({"role": "user", "content": proactive_hint})
 
         tool_defs: list[dict[str, Any]] | None = None
         if not self._tools.empty:

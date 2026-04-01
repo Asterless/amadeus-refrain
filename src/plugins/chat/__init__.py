@@ -184,10 +184,6 @@ async def collect_group_context(bot: Bot, event: GroupMessageEvent) -> None:
     if not text:
         return
 
-    # 被 @ 的消息交给 chat handler，不走主动插话
-    if event.is_tome():
-        return
-
     nickname = event.sender.nickname or str(event.user_id)
     group_id = str(event.group_id)
     _timeline.add(
@@ -196,6 +192,10 @@ async def collect_group_context(bot: Bot, event: GroupMessageEvent) -> None:
         speaker=f"{nickname}({event.user_id})",
         content=text,
     )
+
+    # 被 @ 的消息交给 chat handler，不走主动插话
+    if event.is_tome():
+        return
 
     identity = _identity_mgr.resolve()
     _llm.maybe_warm(group_id, identity, str(event.user_id))
@@ -211,7 +211,7 @@ async def collect_group_context(bot: Bot, event: GroupMessageEvent) -> None:
                 parts.append(f"原因：{d['reason']}")
             if parts:
                 hint_parts.append("，".join(parts))
-        proactive_hint = "（主动插话）" + "；".join(hint_parts) if hint_parts else "（主动插话）"
+        proactive_hint = "【主动插话】" + "；".join(hint_parts) if hint_parts else "【主动插话】"
 
         sid = _session_id(event)
         ctx = ToolContext(bot=bot, user_id=str(event.user_id), group_id=group_id)
@@ -222,11 +222,12 @@ async def collect_group_context(bot: Bot, event: GroupMessageEvent) -> None:
         reply = await _llm.chat(
             session_id=sid,
             user_id=str(event.user_id),
-            user_text=f"[{proactive_hint}] {text}",
+            user_text=text,
             identity=identity,
             group_id=group_id,
             ctx=ctx,
             on_segment=send_segment,
+            proactive_hint=proactive_hint,
         )
         if reply:
             await bot.send_group_msg(group_id=event.group_id, message=reply)
