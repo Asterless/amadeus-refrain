@@ -11,11 +11,13 @@
 
 ## Building & Updating
 
-`soul/` is volume-mounted (`./soul:/app/soul:ro`). Changes to soul files take effect with a restart:
+`soul/` and `.env` are volume-mounted. Changes to soul files take effect with a restart:
 
 ```bash
-docker compose restart bot           # Soul/config changes only
+docker compose restart bot           # Soul/config/.env changes only
 docker compose up bot -d --build     # Code/dependency/Dockerfile changes
 ```
 
 **Note**: `docker compose restart` does not rebuild images.
+
+The bot image uses a two-stage Docker build. `GIT_COMMIT` build arg is baked in and logged at startup for version identification.

@@ -22,13 +22,20 @@ QQ chat bot using NoneBot2 + Anthropic Claude API. NapCat handles QQ protocol ov
 
 ```
 QQ ←→ NapCat (WS) ←→ NoneBot2 (bot.py)
-                        ├── plugins/chat  →  IdentityManager.resolve()
-                        │                 →  PromptBuilder.build_blocks()
-                        │                 →  LLMClient.chat()
-                        │                      ├── Anthropic SSE stream
-                        │                      └── Tool loop (max 5 rounds)
+                        ├── plugins/chat (@bot, priority=10)
+                        │     → IdentityManager.resolve()
+                        │     → scheduler.interrupt() (cancel pending proactive)
+                        │     → LLMClient.chat()
+                        │          ├── Anthropic SSE stream
+                        │          └── Tool loop (max 5 rounds)
+                        │     → scheduler.release()
+                        │
                         └── group_listener (priority=1, non-blocking)
-                             → GroupTimeline.add()
+                              → GroupTimeline.add()
+                              → GroupChatScheduler.notify()
+                                   ├── debounce (N sec quiet) → LLM chat
+                                   └── batch (M msgs full)    → LLM chat
+                                        └── pass_turn tool → skip or reply
 ```
 
 - Config: `BotConfig` (Pydantic) loaded via `config_loader.py` — TOML < env vars < CLI args
