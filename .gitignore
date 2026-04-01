@@ -5,6 +5,7 @@ __pycache__/
 dist/
 .env
 .env.local
+config.toml
 data/memories/*.qmd
 napcat/data/
 napcat/config/napcat_*.json

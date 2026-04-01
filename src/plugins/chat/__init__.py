@@ -28,13 +28,17 @@ _llm: LLMClient
 _identity_mgr: IdentityManager
 _timeline: GroupTimeline
 _short_term: ShortTermMemory
+_allowed_groups: set[int] = set()
+_allowed_private_users: set[int] = set()
 
 
 @driver.on_startup
 async def _init() -> None:
-    global _llm, _identity_mgr, _timeline, _short_term
+    global _llm, _identity_mgr, _timeline, _short_term, _allowed_groups, _allowed_private_users
 
     bot_config = load_config()
+    _allowed_groups = set(bot_config.group.allowed_groups)
+    _allowed_private_users = set(bot_config.allowed_private_users)
 
     long_term = LongTermMemory(memory_dir=bot_config.memory.dir)
     _short_term = ShortTermMemory()
@@ -86,6 +90,8 @@ async def _on_connect(bot: Bot) -> None:
         bot_config = load_config()
         group_list: list[dict[str, object]] = await bot.get_group_list()
         group_ids = [str(g["group_id"]) for g in group_list]
+        if _allowed_groups:
+            group_ids = [gid for gid in group_ids if int(gid) in _allowed_groups]
         logger.info("loading history | groups={}", len(group_ids))
         await load_group_history(
             napcat_url=bot_config.napcat.api_url,
@@ -110,6 +116,8 @@ group_listener = on_message(priority=1, block=False)
 
 @group_listener.handle()
 async def collect_group_context(bot: Bot, event: GroupMessageEvent) -> None:
+    if _allowed_groups and event.group_id not in _allowed_groups:
+        return
     text = event.get_plaintext().strip()
     if not text:
         return
@@ -158,6 +166,14 @@ chat = on_message(rule=to_me(), priority=10, block=True)
 
 @chat.handle()
 async def handle_chat(bot: Bot, event: MessageEvent) -> None:
+    # 白名单过滤
+    if isinstance(event, GroupMessageEvent):
+        if _allowed_groups and event.group_id not in _allowed_groups:
+            return
+    else:
+        if _allowed_private_users and event.user_id not in _allowed_private_users:
+            return
+
     user_text = event.get_plaintext().strip()
     if not user_text:
         return

@@ -46,6 +46,7 @@ class GroupConfig(BaseModel):
 
     max_timeline_messages: int = 200
     history_load_count: int = 30
+    allowed_groups: list[int] = []  # 群聊白名单，空 = 不限制
 
 
 class NapcatConfig(BaseModel):
@@ -63,3 +64,4 @@ class BotConfig(BaseModel):
     group: GroupConfig = GroupConfig()
     napcat: NapcatConfig = NapcatConfig()
     superusers: set[str] = set()
+    allowed_private_users: list[int] = []  # 私聊白名单，空 = 不限制
