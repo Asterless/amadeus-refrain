@@ -31,13 +31,19 @@ class ProactiveDecision(TypedDict):
 class _GroupBatch:
     """单个群的 batch 状态。"""
 
-    __slots__ = ("debounce_task", "evaluating", "msg_count", "pending")
+    __slots__ = (
+        "cooldown_task", "debounce_task", "evaluating",
+        "last_identity", "last_on_reply", "msg_count", "pending",
+    )
 
     def __init__(self) -> None:
         self.msg_count: int = 0  # 自上次评估后的消息计数
         self.debounce_task: asyncio.Task[None] | None = None  # 当前 debounce 定时器
         self.evaluating: bool = False  # 是否正在评估
         self.pending: bool = False  # 评估期间是否有新消息待处理
+        self.cooldown_task: asyncio.Task[None] | None = None  # 冷却到期定时器
+        self.last_identity: Identity | None = None  # 最近一次 notify 的 identity
+        self.last_on_reply: Callable[[list[ProactiveDecision]], Awaitable[None]] | None = None
 
 
 class ProactiveEvaluator:
@@ -86,18 +92,29 @@ class ProactiveEvaluator:
         if not self._enabled or not identity.proactive:
             return
 
-        # 冷却期内不处理
-        last = self._last_proactive.get(group_id, 0.0)
-        if time.monotonic() - last < self._cooldown:
-            return
-
         batch = self._batches.setdefault(group_id, _GroupBatch())
         batch.msg_count += 1
+        batch.last_identity = identity
+        batch.last_on_reply = on_reply
 
         # 如果正在评估，标记 pending 然后返回
         if batch.evaluating:
             batch.pending = True
             logger.debug("batch | group={} pending (evaluating) msgs={}", group_id, batch.msg_count)
+            return
+
+        # 冷却期内：计数但不立即评估，调度冷却到期后自动触发
+        last = self._last_proactive.get(group_id, 0.0)
+        remaining = self._cooldown - (time.monotonic() - last)
+        if remaining > 0:
+            if not batch.cooldown_task or batch.cooldown_task.done():
+                logger.debug(
+                    "batch | group={} in cooldown ({:.1f}s left), scheduled post-cooldown eval",
+                    group_id, remaining,
+                )
+                batch.cooldown_task = asyncio.create_task(
+                    self._after_cooldown(remaining, group_id),
+                )
             return
 
         # 取消旧的 debounce 定时器
@@ -120,16 +137,36 @@ class ProactiveEvaluator:
             )
 
     async def close(self) -> None:
-        # 取消所有 debounce 定时器
+        # 取消所有定时器
         for batch in self._batches.values():
-            if batch.debounce_task and not batch.debounce_task.done():
-                batch.debounce_task.cancel()
+            for task in (batch.debounce_task, batch.cooldown_task):
+                if task and not task.done():
+                    task.cancel()
         if self._session is not None:
             await self._session.close()
 
     # ------------------------------------------------------------------
     # 内部：触发与 debounce
     # ------------------------------------------------------------------
+
+    async def _after_cooldown(self, delay: float, group_id: str) -> None:
+        """冷却期结束后，用积累的消息立即触发评估。"""
+        try:
+            await asyncio.sleep(delay)
+            batch = self._batches.get(group_id)
+            if not batch or batch.msg_count == 0 or batch.evaluating:
+                return
+            identity = batch.last_identity
+            on_reply = batch.last_on_reply
+            if not identity or not on_reply:
+                return
+            logger.info(
+                "batch | group={} cooldown expired ({} msgs) → evaluating",
+                group_id, batch.msg_count,
+            )
+            self._fire(group_id, identity, on_reply)
+        except asyncio.CancelledError:
+            pass
 
     async def _debounce(
         self,

@@ -38,6 +38,10 @@ QQ ←→ NapCat (WS) ←→ NoneBot2 (bot.py)
 Details: [docs/architecture.md](docs/architecture.md) — design decisions, config, tools, access control
 Operations: [docs/operations.md](docs/operations.md) — Docker/NapCat, building & updating
 
+## Workflow
+
+All tests must pass (`uv run pytest`) before committing code. Same for lint and type checks.
+
 ## Language
 
-Chinese-language project. Code comments, docstrings, user-facing strings, and identity configs are in Chinese.
+User-facing strings and identity configs are in Chinese. Everything else (code, comments, docstrings, log messages) in English.

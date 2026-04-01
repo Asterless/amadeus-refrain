@@ -32,9 +32,9 @@ def test_load_defaults_without_file(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert isinstance(cfg, BotConfig)
     assert cfg.llm.base_url == "http://127.0.0.1:34567/v1"
     assert cfg.llm.api_key == "sk-placeholder"
-    assert cfg.llm.model == "claude-sonnet-4-20250514"
+    assert cfg.llm.model == "claude-sonnet-4-6"
     assert cfg.llm.max_tokens == 1024
-    assert cfg.llm.context.max_context_tokens == 200_000
+    assert cfg.llm.context.max_context_tokens == 1_000_000
     assert cfg.llm.context.compact_ratio == 0.7
     assert cfg.llm.cache.warm_enabled is True
     assert cfg.llm.cache.warm_interval_messages == 10
@@ -203,7 +203,7 @@ def test_proactive_config_defaults() -> None:
     from src.config import BotConfig
     config = BotConfig()
     assert config.proactive.enabled is True
-    assert config.proactive.model == "claude-haiku-4-5-20251001"
+    assert config.proactive.model == "claude-sonnet-4-6-20250610"
     assert config.proactive.timeout == 15.0
     assert config.proactive.context_lines == 20
     assert config.proactive.cooldown == 60

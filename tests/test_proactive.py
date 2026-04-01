@@ -39,12 +39,22 @@ class TestNotify:
         ev.notify("g1", identity, on_reply=lambda d: None)  # type: ignore[arg-type]
         assert "g1" not in ev._batches
 
-    def test_cooldown_skips(self, timeline: GroupTimeline) -> None:
+    @pytest.mark.asyncio
+    async def test_cooldown_counts_and_schedules(self, timeline: GroupTimeline) -> None:
+        """冷却期内消息仍计数，并调度冷却到期后自动评估。"""
         ev = ProactiveEvaluator(timeline=timeline, model="m", api_key="k", base_url="u", cooldown=60)
         identity = _make_identity(proactive="规则")
+
+        async def noop(d: list[ProactiveDecision]) -> None:
+            pass
+
         ev._last_proactive["g1"] = time.monotonic()
-        ev.notify("g1", identity, on_reply=lambda d: None)  # type: ignore[arg-type]
-        assert "g1" not in ev._batches
+        ev.notify("g1", identity, on_reply=noop)
+        batch = ev._batches["g1"]
+        assert batch.msg_count == 1
+        assert batch.cooldown_task is not None
+        assert not batch.cooldown_task.done()
+        await ev.close()
 
     @pytest.mark.asyncio
     async def test_increments_msg_count(self, timeline: GroupTimeline) -> None:
