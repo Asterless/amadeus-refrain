@@ -3,14 +3,6 @@
 from pydantic import BaseModel
 
 
-class CacheConfig(BaseModel):
-    """提示缓存预热配置。"""
-
-    warm_enabled: bool = True
-    warm_interval_messages: int = 10
-    warm_ttl_seconds: int = 300
-
-
 class ContextConfig(BaseModel):
     """上下文窗口与压缩配置。"""
 
@@ -26,7 +18,6 @@ class LLMConfig(BaseModel):
     model: str = "claude-sonnet-4-6"
     max_tokens: int = 1024
     context: ContextConfig = ContextConfig()
-    cache: CacheConfig = CacheConfig()
 
 
 class LogConfig(BaseModel):
@@ -47,24 +38,14 @@ class SoulConfig(BaseModel):
     dir: str = "soul"
 
 
-class ProactiveConfig(BaseModel):
-    """主动插话配置。"""
-
-    enabled: bool = True
-    model: str = "claude-sonnet-4-6-20250610"
-    timeout: float = 15.0  # 决策调用超时（秒）
-    context_lines: int = 20  # 传给决策模型的最近消息条数
-    cooldown: int = 60  # 主动插话后冷却时间（秒）
-    batch_timeout: float = 5.0  # 消息间隙多久触发评估（秒）
-    batch_size: int = 10  # 最多攒多少条消息强制触发评估
-
-
 class GroupConfig(BaseModel):
     """群聊上下文配置。"""
 
     max_timeline_messages: int = 200
     history_load_count: int = 30
-    allowed_groups: list[int] = []  # 群聊白名单，空 = 不限制
+    allowed_groups: list[int] = []
+    debounce_seconds: float = 5.0
+    batch_size: int = 10
 
 
 class NapcatConfig(BaseModel):
@@ -82,6 +63,5 @@ class BotConfig(BaseModel):
     soul: SoulConfig = SoulConfig()
     group: GroupConfig = GroupConfig()
     napcat: NapcatConfig = NapcatConfig()
-    proactive: ProactiveConfig = ProactiveConfig()
     superusers: set[str] = set()
-    allowed_private_users: list[int] = []  # 私聊白名单，空 = 不限制
+    allowed_private_users: list[int] = []

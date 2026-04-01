@@ -36,14 +36,13 @@ def test_load_defaults_without_file(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert cfg.llm.max_tokens == 1024
     assert cfg.llm.context.max_context_tokens == 1_000_000
     assert cfg.llm.context.compact_ratio == 0.7
-    assert cfg.llm.cache.warm_enabled is True
-    assert cfg.llm.cache.warm_interval_messages == 10
-    assert cfg.llm.cache.warm_ttl_seconds == 300
     assert cfg.log.dir == "storage/logs"
     assert cfg.memory.dir == "storage/memories"
     assert cfg.soul.dir == "soul"
     assert cfg.group.max_timeline_messages == 200
     assert cfg.group.history_load_count == 30
+    assert cfg.group.debounce_seconds == 5.0
+    assert cfg.group.batch_size == 10
     assert cfg.napcat.api_url == "http://localhost:29300"
     assert cfg.superusers == set()
 
@@ -72,11 +71,6 @@ max_tokens = 2048
 max_context_tokens = 100_000
 compact_ratio = 0.5
 
-[llm.cache]
-warm_enabled = false
-warm_interval_messages = 5
-warm_ttl_seconds = 600
-
 [memory]
 dir = "custom/memories"
 
@@ -86,6 +80,8 @@ dir = "custom_soul"
 [group]
 max_timeline_messages = 100
 history_load_count = 50
+debounce_seconds = 3.0
+batch_size = 5
 
 [napcat]
 api_url = "http://napcat:29300"
@@ -100,13 +96,12 @@ api_url = "http://napcat:29300"
     assert cfg.llm.max_tokens == 2048
     assert cfg.llm.context.max_context_tokens == 100_000
     assert cfg.llm.context.compact_ratio == 0.5
-    assert cfg.llm.cache.warm_enabled is False
-    assert cfg.llm.cache.warm_interval_messages == 5
-    assert cfg.llm.cache.warm_ttl_seconds == 600
     assert cfg.memory.dir == "custom/memories"
     assert cfg.soul.dir == "custom_soul"
     assert cfg.group.max_timeline_messages == 100
     assert cfg.group.history_load_count == 50
+    assert cfg.group.debounce_seconds == 3.0
+    assert cfg.group.batch_size == 5
     assert cfg.napcat.api_url == "http://napcat:29300"
     assert cfg.superusers == {"123456", "789012"}
 
@@ -199,23 +194,3 @@ model = "auto-detected-model"
     assert cfg.llm.model == "auto-detected-model"
 
 
-def test_proactive_config_defaults() -> None:
-    from src.config import BotConfig
-    config = BotConfig()
-    assert config.proactive.enabled is True
-    assert config.proactive.model == "claude-sonnet-4-6-20250610"
-    assert config.proactive.timeout == 15.0
-    assert config.proactive.context_lines == 20
-    assert config.proactive.cooldown == 60
-
-
-def test_proactive_config_from_toml(tmp_path: Path) -> None:
-    from src.config_loader import load_config
-    toml_file = tmp_path / "config.toml"
-    toml_file.write_text(
-        '[proactive]\nmodel = "custom-model"\ntimeout = 5.0\ncooldown = 30\n'
-    )
-    config = load_config(config_path=str(toml_file))
-    assert config.proactive.model == "custom-model"
-    assert config.proactive.timeout == 5.0
-    assert config.proactive.cooldown == 30
