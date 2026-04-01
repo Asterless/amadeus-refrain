@@ -69,6 +69,15 @@ All config flows through `src/config.py:BotConfig` (Pydantic model), loaded from
 
 Configured in `pyproject.toml`. RUF001/RUF002/RUF003 are ignored to allow Chinese full-width characters throughout the codebase.
 
+### Docker / NapCat 运维
+
+- NapCat 持久化两个目录：`./napcat/config` (配置) 和 `./napcat/data` (QQ 会话/设备指纹)
+- 设备指纹存储在 `napcat/data/nt_qq/global/nt_data/mmkv/`，登录 token 在 `napcat/data/nt_qq/global/nt_data/Login/`
+- **重启用 `docker compose restart napcat`**，不要 `down` + `up`（避免设备指纹变化触发风控）
+- 掉线通常是腾讯风控，不是持久化问题。风控后 token 服务端失效，需重新登录
+- NapCat 使用 NTQQ 协议，支持手机 QQ 同时在线（多设备共存）
+- Bot QQ 号：10000（Amadeus），主群：100001
+
 ## Language
 
 This is a Chinese-language project. Code comments, docstrings, user-facing strings, and identity configurations are in Chinese.

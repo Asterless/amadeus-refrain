@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from src.memory.group_context import GroupContext
+from src.memory.group_timeline import GroupTimeline
 from src.memory.long_term import LongTermMemory
 from src.memory.short_term import ShortTermMemory
 
@@ -20,3 +21,8 @@ def long_term(tmp_path: Path) -> LongTermMemory:
 @pytest.fixture
 def group_context() -> GroupContext:
     return GroupContext(max_messages=10)
+
+
+@pytest.fixture
+def group_timeline() -> GroupTimeline:
+    return GroupTimeline(max_messages=50)
