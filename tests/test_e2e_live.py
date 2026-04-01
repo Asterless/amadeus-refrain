@@ -11,7 +11,6 @@ import pytest
 from src.identity.models import Identity
 from src.llm.client import LLMClient
 from src.llm.prompt import PromptBuilder
-from src.memory.group_context import GroupContext
 from src.memory.long_term import LongTermMemory
 from src.memory.short_term import ShortTermMemory
 from src.tools import ToolRegistry
@@ -33,8 +32,7 @@ pytestmark = pytest.mark.skipif(
 async def llm(tmp_path: object) -> LLMClient:
     long_term = LongTermMemory(memory_dir=str(tmp_path))
     short_term = ShortTermMemory()
-    group_ctx = GroupContext()
-    prompt_builder = PromptBuilder(long_term=long_term, group_context=group_ctx)
+    prompt_builder = PromptBuilder(long_term=long_term)
 
     tools = ToolRegistry()
     tools.register(SaveMemoryTool(long_term))

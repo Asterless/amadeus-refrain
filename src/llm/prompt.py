@@ -10,13 +10,10 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from src.identity.models import Identity
 from src.memory.long_term import LongTermMemory
-
-if TYPE_CHECKING:
-    from src.memory.group_context import GroupContext
 
 TOOL_GUIDE = """\
 【工具使用指南】
@@ -30,9 +27,8 @@ TOOL_GUIDE = """\
 
 
 class PromptBuilder:
-    def __init__(self, long_term: LongTermMemory, group_context: GroupContext | None = None) -> None:
+    def __init__(self, long_term: LongTermMemory) -> None:
         self._long_term = long_term
-        self._group_context = group_context
 
     async def build_blocks(self, identity: Identity, user_id: str, group_id: str | None = None) -> list[dict[str, Any]]:
         """返回 system blocks，只含稳定内容，最大化 cache 命中。"""
@@ -54,10 +50,3 @@ class PromptBuilder:
             })
 
         return blocks
-
-    def build_context_message(self, group_id: str) -> str | None:
-        """返回群聊记录文本（兼容旧调用方，新代码不使用）。"""
-        if self._group_context is None:
-            return None
-        ctx = self._group_context.format(group_id)
-        return ctx if ctx else None
