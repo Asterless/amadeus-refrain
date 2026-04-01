@@ -62,11 +62,12 @@ class GroupChatScheduler:
 
 **`notify(group_id)`** — 普通群消息调用：
 
-1. `msg_count++`
-2. 如果 `running_task` 正在跑 → 什么都不做（消息已在 timeline，下次会看到）
-3. 取消旧 `debounce_task`
-4. `msg_count >= batch_size` → 立即 `_fire()`
-5. 否则 → 启动新 `debounce_task`（sleep N 秒后 `_fire()`）
+1. `identity = identity_mgr.resolve()`；如果 `identity.proactive is None` → return（无 proactive 规则的 identity 不触发 debounce）
+2. `msg_count++`
+3. 如果 `running_task` 正在跑 → 什么都不做（消息已在 timeline，下次会看到）
+4. 取消旧 `debounce_task`
+5. `msg_count >= batch_size` → 立即 `_fire()`
+6. 否则 → 启动新 `debounce_task`（sleep N 秒后 `_fire()`）
 
 **`interrupt(group_id)`** — @bot 时调用：
 
@@ -131,6 +132,7 @@ PASS_TURN_TOOL = {
 
 - `allow_skip=True` 时追加到工具列表末尾
 - tool loop 中拦截：模型调 `pass_turn` → 记日志 + `set_input_tokens`（保留 cache 效果）→ 返回 `None`
+- 如果模型同时输出文本和调 `pass_turn`，以 `pass_turn` 为准，丢弃文本
 - 不注册到 ToolRegistry，不需要 `execute()` 实现
 
 **删除：**
@@ -195,6 +197,10 @@ class GroupConfig(BaseModel):
 
 **`_shutdown()`：** `_proactive.close()` → `_scheduler.close()`。
 
+### config_loader.py 改动
+
+删除 `_ENV_MAP` 中 `"PROACTIVE_MODEL": "proactive.model"` 条目。
+
 ## 并发控制
 
 - **@bot 抢占：** `interrupt()` 取消 debounce + 正在跑的 task，@bot handler 独占 chat()
@@ -214,6 +220,9 @@ class GroupConfig(BaseModel):
 | 修改 | `src/memory/group_timeline.py` |
 | 修改 | `src/llm/prompt.py` |
 | 修改 | `config.toml`（如有） |
-| 修改 | 相关测试文件 |
+| 删除 | `tests/test_proactive.py` |
+| 新增 | `tests/test_scheduler.py` |
+| 修改 | `tests/test_group_timeline.py` — 删 4 个 warm 相关测试 |
+| 修改 | `tests/test_config_loader.py` — 删 proactive/cache config 断言 |
 
 **净效果：** 删 ~430 行，加 ~150 行，净减 ~280 行。
