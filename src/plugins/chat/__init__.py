@@ -123,9 +123,25 @@ def _session_id(event: MessageEvent) -> str:
     return f"private_{event.user_id}"
 
 
-def _render_message(msg: Message) -> str:
-    """将消息段转为可读文本，保留 @提及 信息。"""
+_REPLY_PREVIEW_MAX = 50
+
+
+def _render_message(msg: Message, reply: object | None = None) -> str:
+    """将消息段转为可读文本，保留 @提及 和引用回复信息。"""
     parts: list[str] = []
+
+    # 引用回复 → [回复 昵称(QQ号): 原文摘要]
+    if reply is not None:
+        sender = getattr(reply, "sender", None)
+        reply_msg = getattr(reply, "message", None)
+        if sender and reply_msg:
+            uid = getattr(sender, "user_id", "") or ""
+            nick = getattr(sender, "nickname", "") or str(uid)
+            original = reply_msg.extract_plain_text().strip()
+            if len(original) > _REPLY_PREVIEW_MAX:
+                original = original[:_REPLY_PREVIEW_MAX] + "…"
+            parts.append(f"[回复 {nick}({uid}): {original}] ")
+
     for seg in msg:
         if seg.type == "text":
             parts.append(seg.data.get("text", ""))
@@ -147,7 +163,7 @@ async def collect_group_context(bot: Bot, event: GroupMessageEvent) -> None:
     # Skip bot's own messages — already added as role="assistant" by LLMClient
     if str(event.user_id) == bot.self_id:
         return
-    text = _render_message(event.get_message())
+    text = _render_message(event.get_message(), reply=event.reply)
     if not text:
         return
 
@@ -181,7 +197,8 @@ async def handle_chat(bot: Bot, event: MessageEvent) -> None:
         if _allowed_private_users and event.user_id not in _allowed_private_users:
             return
 
-    user_text = _render_message(event.get_message())
+    reply = getattr(event, "reply", None)
+    user_text = _render_message(event.get_message(), reply=reply)
     if not user_text:
         return
 
