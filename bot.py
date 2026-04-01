@@ -22,7 +22,10 @@ if args.llm_api_key:
 if args.llm_model:
     os.environ["_CLI_LLM_MODEL"] = args.llm_model
 
-log_dir = Path("data/logs")
+from src.config_loader import load_config as _load_config
+
+_bot_config = _load_config(config_path=args.config)
+log_dir = Path(_bot_config.log.dir)
 log_dir.mkdir(parents=True, exist_ok=True)
 logger.add(
     log_dir / "bot_{time:YYYY-MM-DD}.log",

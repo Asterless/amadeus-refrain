@@ -24,7 +24,7 @@ services:
     depends_on:
       - napcat
     volumes:
-      - ./data:/app/data
+      - ./storage:/app/storage
       - ./soul:/app/soul:ro
       - ./.env:/app/.env:ro
     extra_hosts:

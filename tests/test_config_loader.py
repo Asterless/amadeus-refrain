@@ -39,7 +39,8 @@ def test_load_defaults_without_file(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert cfg.llm.cache.warm_enabled is True
     assert cfg.llm.cache.warm_interval_messages == 10
     assert cfg.llm.cache.warm_ttl_seconds == 300
-    assert cfg.memory.dir == "data/memories"
+    assert cfg.log.dir == "storage/logs"
+    assert cfg.memory.dir == "storage/memories"
     assert cfg.soul.dir == "soul"
     assert cfg.group.max_timeline_messages == 200
     assert cfg.group.history_load_count == 30

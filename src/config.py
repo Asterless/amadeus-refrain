@@ -29,10 +29,16 @@ class LLMConfig(BaseModel):
     cache: CacheConfig = CacheConfig()
 
 
+class LogConfig(BaseModel):
+    """日志配置。"""
+
+    dir: str = "storage/logs"
+
+
 class MemoryConfig(BaseModel):
     """长期记忆存储配置。"""
 
-    dir: str = "data/memories"
+    dir: str = "storage/memories"
 
 
 class SoulConfig(BaseModel):
@@ -59,6 +65,7 @@ class BotConfig(BaseModel):
     """全局 Bot 配置。"""
 
     llm: LLMConfig = LLMConfig()
+    log: LogConfig = LogConfig()
     memory: MemoryConfig = MemoryConfig()
     soul: SoulConfig = SoulConfig()
     group: GroupConfig = GroupConfig()
