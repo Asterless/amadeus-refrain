@@ -47,6 +47,15 @@ class SoulConfig(BaseModel):
     dir: str = "soul"
 
 
+class ProactiveConfig(BaseModel):
+    """主动插话配置。"""
+
+    model: str = "claude-haiku-4-5-20251001"
+    timeout: float = 3.0  # 决策调用超时（秒）
+    context_lines: int = 20  # 传给决策模型的最近消息条数
+    cooldown: int = 60  # 主动插话后冷却时间（秒）
+
+
 class GroupConfig(BaseModel):
     """群聊上下文配置。"""
 
@@ -70,5 +79,6 @@ class BotConfig(BaseModel):
     soul: SoulConfig = SoulConfig()
     group: GroupConfig = GroupConfig()
     napcat: NapcatConfig = NapcatConfig()
+    proactive: ProactiveConfig = ProactiveConfig()
     superusers: set[str] = set()
     allowed_private_users: list[int] = []  # 私聊白名单，空 = 不限制
