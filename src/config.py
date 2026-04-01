@@ -51,7 +51,7 @@ class ProactiveConfig(BaseModel):
     """主动插话配置。"""
 
     enabled: bool = True
-    model: str = "claude-haiku-4-5-20251001"
+    model: str = "claude-sonnet-4-6-20250610"
     timeout: float = 15.0  # 决策调用超时（秒）
     context_lines: int = 20  # 传给决策模型的最近消息条数
     cooldown: int = 60  # 主动插话后冷却时间（秒）

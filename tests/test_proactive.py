@@ -83,6 +83,7 @@ class TestBuildDecisionPrompt:
         system, messages = ev.build_decision_prompt("g1", identity)
         assert "测试人设" in system[0]["text"]
         assert "只在有人求助时插话" in system[0]["text"]
+        assert '"replies"' in system[0]["text"]
         user_text = messages[0]["content"]
         assert "消息2" in user_text
         assert "消息3" in user_text
@@ -99,30 +100,41 @@ class TestBuildDecisionPrompt:
 
 
 class TestParseDecision:
-    def test_valid_reply_true(self) -> None:
+    def test_batch_replies(self) -> None:
+        text = '{"replies": [{"reason": "有人问物理", "reply_to": "张三"}, {"reason": "求助", "reply_to": "大家"}]}'
+        result = ProactiveEvaluator._parse_decision(text)
+        assert len(result) == 2
+        assert result[0] == ProactiveDecision(reason="有人问物理", reply_to="张三")
+        assert result[1] == ProactiveDecision(reason="求助", reply_to="大家")
+
+    def test_batch_empty_replies(self) -> None:
+        text = '{"replies": []}'
+        assert ProactiveEvaluator._parse_decision(text) == []
+
+    def test_legacy_reply_true(self) -> None:
         text = '{"reply": true, "reason": "有人问物理", "reply_to": "张三"}'
         result = ProactiveEvaluator._parse_decision(text)
-        assert result == ProactiveDecision(reason="有人问物理", reply_to="张三")
+        assert result == [ProactiveDecision(reason="有人问物理", reply_to="张三")]
 
-    def test_valid_reply_false(self) -> None:
+    def test_legacy_reply_false(self) -> None:
         text = '{"reply": false, "reason": "", "reply_to": ""}'
-        assert ProactiveEvaluator._parse_decision(text) is None
+        assert ProactiveEvaluator._parse_decision(text) == []
 
     def test_json_embedded_in_text(self) -> None:
-        text = '好的，我来判断一下\n{"reply": true, "reason": "求助", "reply_to": "大家"}\n'
+        text = '好的，我来判断一下\n{"replies": [{"reason": "求助", "reply_to": "大家"}]}\n'
         result = ProactiveEvaluator._parse_decision(text)
-        assert result is not None
-        assert result["reason"] == "求助"
+        assert len(result) == 1
+        assert result[0]["reason"] == "求助"
 
     def test_invalid_json(self) -> None:
-        assert ProactiveEvaluator._parse_decision("YES") is None
+        assert ProactiveEvaluator._parse_decision("YES") == []
 
-    def test_missing_fields(self) -> None:
+    def test_legacy_missing_fields(self) -> None:
         text = '{"reply": true}'
         result = ProactiveEvaluator._parse_decision(text)
-        assert result is not None
-        assert result["reason"] == ""
-        assert result["reply_to"] == ""
+        assert len(result) == 1
+        assert result[0]["reason"] == ""
+        assert result[0]["reply_to"] == ""
 
 
 class TestBatchTrigger:

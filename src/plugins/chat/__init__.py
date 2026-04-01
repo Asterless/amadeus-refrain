@@ -130,13 +130,17 @@ async def _on_connect(bot: Bot) -> None:
         async def _make_reply_callback(g: str) -> None:
             """为指定群构造主动回复回调。"""
 
-            async def _on_reply(decision: ProactiveDecision) -> None:
+            async def _on_reply(decisions: list[ProactiveDecision]) -> None:
                 hint_parts: list[str] = []
-                if decision["reply_to"]:
-                    hint_parts.append(f"回复对象：{decision['reply_to']}")
-                if decision["reason"]:
-                    hint_parts.append(f"插话原因：{decision['reason']}")
-                proactive_hint = "（主动插话）" + "，".join(hint_parts) if hint_parts else "（主动插话）"
+                for d in decisions:
+                    parts: list[str] = []
+                    if d["reply_to"]:
+                        parts.append(f"回复对象：{d['reply_to']}")
+                    if d["reason"]:
+                        parts.append(f"原因：{d['reason']}")
+                    if parts:
+                        hint_parts.append("，".join(parts))
+                proactive_hint = "（主动插话）" + "；".join(hint_parts) if hint_parts else "（主动插话）"
 
                 sid = f"group_{g}"
                 ctx = ToolContext(bot=bot, user_id="", group_id=g)
@@ -197,13 +201,17 @@ async def collect_group_context(bot: Bot, event: GroupMessageEvent) -> None:
     _llm.maybe_warm(group_id, identity, str(event.user_id))
 
     # 主动插话：通知 evaluator，由其 debounce/batch 后决定是否评估
-    async def _on_proactive_reply(decision: ProactiveDecision) -> None:
+    async def _on_proactive_reply(decisions: list[ProactiveDecision]) -> None:
         hint_parts: list[str] = []
-        if decision["reply_to"]:
-            hint_parts.append(f"回复对象：{decision['reply_to']}")
-        if decision["reason"]:
-            hint_parts.append(f"插话原因：{decision['reason']}")
-        proactive_hint = "（主动插话）" + "，".join(hint_parts) if hint_parts else "（主动插话）"
+        for d in decisions:
+            parts: list[str] = []
+            if d["reply_to"]:
+                parts.append(f"回复对象：{d['reply_to']}")
+            if d["reason"]:
+                parts.append(f"原因：{d['reason']}")
+            if parts:
+                hint_parts.append("，".join(parts))
+        proactive_hint = "（主动插话）" + "；".join(hint_parts) if hint_parts else "（主动插话）"
 
         sid = _session_id(event)
         ctx = ToolContext(bot=bot, user_id=str(event.user_id), group_id=group_id)

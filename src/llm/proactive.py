@@ -22,7 +22,7 @@ from src.memory.group_timeline import GroupTimeline
 
 
 class ProactiveDecision(TypedDict):
-    """决策结果。"""
+    """单条插话决策。"""
 
     reason: str  # 插话原因
     reply_to: str  # 回复对象（昵称或 "大家"）
@@ -80,7 +80,7 @@ class ProactiveEvaluator:
         self,
         group_id: str,
         identity: Identity,
-        on_reply: Callable[[ProactiveDecision], Awaitable[None]],
+        on_reply: Callable[[list[ProactiveDecision]], Awaitable[None]],
     ) -> None:
         """通知有新群消息。内部处理 debounce、batch、评估和回调。"""
         if not self._enabled or not identity.proactive:
@@ -135,7 +135,7 @@ class ProactiveEvaluator:
         self,
         group_id: str,
         identity: Identity,
-        on_reply: Callable[[ProactiveDecision], Awaitable[None]],
+        on_reply: Callable[[list[ProactiveDecision]], Awaitable[None]],
     ) -> None:
         """等待消息间隙后触发评估。"""
         try:
@@ -151,7 +151,7 @@ class ProactiveEvaluator:
         self,
         group_id: str,
         identity: Identity,
-        on_reply: Callable[[ProactiveDecision], Awaitable[None]],
+        on_reply: Callable[[list[ProactiveDecision]], Awaitable[None]],
     ) -> None:
         """启动评估后台任务。"""
         batch = self._batches.get(group_id)
@@ -168,7 +168,7 @@ class ProactiveEvaluator:
         self,
         group_id: str,
         identity: Identity,
-        on_reply: Callable[[ProactiveDecision], Awaitable[None]],
+        on_reply: Callable[[list[ProactiveDecision]], Awaitable[None]],
     ) -> None:
         """评估循环：评估完毕后如有 pending 则再评估一轮。"""
         batch = self._batches.get(group_id)
@@ -180,22 +180,23 @@ class ProactiveEvaluator:
             while True:
                 round_num += 1
                 logger.info("batch | group={} eval round={}", group_id, round_num)
-                decision = await self._evaluate(group_id, identity)
-                if decision:
+                decisions = await self._evaluate(group_id, identity)
+                if decisions:
                     self._last_proactive[group_id] = time.monotonic()
-                    logger.info(
-                        "batch | group={} decided to reply | reply_to={!r} reason={!r}",
-                        group_id, decision["reply_to"], decision["reason"],
-                    )
+                    for d in decisions:
+                        logger.info(
+                            "batch | group={} decided to reply | reply_to={!r} reason={!r}",
+                            group_id, d["reply_to"], d["reason"],
+                        )
                     try:
-                        await on_reply(decision)
+                        await on_reply(decisions)
                     except Exception:
                         logger.exception("proactive reply error | group={}", group_id)
                 else:
                     logger.info("batch | group={} decided not to reply", group_id)
 
                 # 检查是否有 pending
-                if batch.pending and not decision:
+                if batch.pending and not decisions:
                     # 只在上一轮没决定插话时才续评（插话后进冷却期）
                     logger.info("batch | group={} has pending msgs → re-evaluating", group_id)
                     batch.pending = False
@@ -211,6 +212,14 @@ class ProactiveEvaluator:
     # ------------------------------------------------------------------
     # 决策 prompt 构建
     # ------------------------------------------------------------------
+
+    DECISION_FORMAT = (
+        "用 JSON 回答，不要输出其他内容。\n"
+        "想插话时列出回复对象（可多个）：\n"
+        '{"replies": [{"reason": "简短原因", "reply_to": "回复对象昵称或大家"}, ...]}\n'
+        "不想插话时返回空数组：\n"
+        '{"replies": []}'
+    )
 
     def build_decision_prompt(
         self, group_id: str, identity: Identity,
@@ -228,7 +237,8 @@ class ProactiveEvaluator:
             else:
                 lines.append(msg["content"])
 
-        system = [{"type": "text", "text": f"{identity.personality}\n\n{identity.proactive}"}]
+        system_text = f"{identity.personality}\n\n{identity.proactive}\n\n{self.DECISION_FORMAT}"
+        system = [{"type": "text", "text": system_text}]
         user_messages = [{"role": "user", "content": "\n".join(lines)}]
         return system, user_messages
 
@@ -241,7 +251,7 @@ class ProactiveEvaluator:
             self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self._timeout))
         return self._session
 
-    async def _evaluate(self, group_id: str, identity: Identity) -> ProactiveDecision | None:
+    async def _evaluate(self, group_id: str, identity: Identity) -> list[ProactiveDecision]:
         """调用廉价模型判断是否应插话。失败最多重试 3 次。"""
         try:
             text = await self._call_decision_api(group_id, identity)
@@ -249,7 +259,7 @@ class ProactiveEvaluator:
             return self._parse_decision(text)
         except Exception:
             logger.warning("proactive eval failed after retries | group={}", group_id, exc_info=True)
-            return None
+            return []
 
     @retry(
         stop=stop_after_attempt(3),
@@ -286,8 +296,9 @@ class ProactiveEvaluator:
             return text.strip()
 
     @staticmethod
-    def _parse_decision(text: str) -> ProactiveDecision | None:
-        """解析决策模型的 JSON 输出。容错处理各种格式。"""
+    def _parse_decision(text: str) -> list[ProactiveDecision]:
+        """解析决策模型的 JSON 输出。支持批量和单条格式，容错处理。"""
+        # 提取 JSON
         try:
             parsed = json.loads(text)
         except json.JSONDecodeError:
@@ -297,14 +308,25 @@ class ProactiveEvaluator:
                 try:
                     parsed = json.loads(text[start:end])
                 except json.JSONDecodeError:
-                    return None
+                    return []
             else:
-                return None
+                return []
 
+        # 新格式：{"replies": [...]}
+        if "replies" in parsed:
+            results: list[ProactiveDecision] = []
+            for item in parsed["replies"]:
+                if isinstance(item, dict):
+                    results.append(ProactiveDecision(
+                        reason=str(item.get("reason", "")),
+                        reply_to=str(item.get("reply_to", "")),
+                    ))
+            return results
+
+        # 兼容旧格式：{"reply": true, "reason": "...", "reply_to": "..."}
         if not parsed.get("reply"):
-            return None
-
-        return ProactiveDecision(
+            return []
+        return [ProactiveDecision(
             reason=str(parsed.get("reason", "")),
             reply_to=str(parsed.get("reply_to", "")),
-        )
+        )]
