@@ -9,6 +9,9 @@ COPY . .
 
 FROM python:3.12-slim AS runtime
 
+ARG GIT_COMMIT=unknown
+ENV GIT_COMMIT=${GIT_COMMIT}
+
 WORKDIR /app
 COPY --from=builder /app /app
 

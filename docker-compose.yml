@@ -17,7 +17,10 @@ services:
       - "host.docker.internal:host-gateway"
 
   bot:
-    build: .
+    build:
+      context: .
+      args:
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
     container_name: qq-bot
     restart: unless-stopped
     env_file: .env

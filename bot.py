@@ -36,7 +36,7 @@ logger.add(
 )
 
 _c = _bot_config
-logger.info("========== Bot 启动配置 ==========")
+logger.info("========== Bot 启动 ({}) ==========", os.environ.get("GIT_COMMIT", "dev"))
 logger.info(
     "[LLM] model={} base_url={} max_tokens={}",
     _c.llm.model, _c.llm.base_url, _c.llm.max_tokens,
