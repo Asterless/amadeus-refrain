@@ -1,7 +1,9 @@
 import argparse
 import os
+from pathlib import Path
 
 import nonebot
+from loguru import logger
 from nonebot.adapters.onebot.v11 import Adapter as OneBotV11Adapter
 
 parser = argparse.ArgumentParser(description="QQ Bot")
@@ -19,6 +21,16 @@ if args.llm_api_key:
     os.environ["_CLI_LLM_API_KEY"] = args.llm_api_key
 if args.llm_model:
     os.environ["_CLI_LLM_MODEL"] = args.llm_model
+
+log_dir = Path("data/logs")
+log_dir.mkdir(parents=True, exist_ok=True)
+logger.add(
+    log_dir / "bot_{time:YYYY-MM-DD}.log",
+    rotation="10 MB",
+    retention="30 days",
+    encoding="utf-8",
+    level="DEBUG",
+)
 
 nonebot.init()
 

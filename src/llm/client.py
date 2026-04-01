@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import aiohttp
@@ -18,6 +19,32 @@ from src.tools.context import ToolContext
 from src.tools.registry import ToolRegistry
 
 MAX_TOOL_ROUNDS = 5
+_SEGMENT_SEP = "---"
+_SEGMENT_DELAY = 0.5  # 分段发送间隔（秒）
+_BLANK_LINE_RE = __import__("re").compile(r"\n{2,}")
+
+
+def _clean_text(text: str) -> str:
+    """压缩连续空行为单个换行。"""
+    return _BLANK_LINE_RE.sub("\n", text).strip()
+
+
+def _split_segments(text: str) -> list[str]:
+    """按 --- 分隔符拆分回复为多条消息，并清理空行。"""
+    segments: list[str] = []
+    current: list[str] = []
+    for line in text.split("\n"):
+        if line.strip() == _SEGMENT_SEP:
+            seg = "\n".join(current).strip()
+            if seg:
+                segments.append(_clean_text(seg))
+            current = []
+        else:
+            current.append(line)
+    last = "\n".join(current).strip()
+    if last:
+        segments.append(_clean_text(last))
+    return segments or [_clean_text(text)]
 
 
 class _ToolUse:
@@ -239,6 +266,7 @@ class LLMClient:
         identity: Identity,
         group_id: str | None = None,
         ctx: ToolContext | None = None,
+        on_segment: Callable[[str], Awaitable[None]] | None = None,
     ) -> str:
         logger.info("chat | session={} user={} identity={} text={!r}", session_id, user_id, identity.id, user_text[:80])
 
@@ -269,14 +297,21 @@ class LLMClient:
 
             if not tool_uses:
                 reply = text or "..."
-                logger.info("reply | session={} len={}", session_id, len(reply))
+                segments = _split_segments(reply)
+                if on_segment and len(segments) > 1:
+                    for seg in segments[:-1]:
+                        await on_segment(seg)
+                        await asyncio.sleep(_SEGMENT_DELAY)
+                last_seg = segments[-1]
+                full_reply = "\n".join(segments)
+                logger.info("reply | session={} len={} segments={}", session_id, len(full_reply), len(segments))
                 if is_group:
-                    self._timeline.add(group_id, role="assistant", content=reply)
+                    self._timeline.add(group_id, role="assistant", content=full_reply)
                     self._timeline.set_input_tokens(group_id, result["input_tokens"])
                 else:
-                    self._short_term.add(session_id, "assistant", reply)
+                    self._short_term.add(session_id, "assistant", full_reply)
                     self._short_term.set_input_tokens(session_id, result["input_tokens"])
-                return reply
+                return last_seg
 
             for tu in tool_uses:
                 logger.info(
@@ -304,13 +339,20 @@ class LLMClient:
         logger.warning("tool loop exhausted | session={} rounds={}", session_id, MAX_TOOL_ROUNDS)
         result = await self._call(system_blocks, messages)
         reply = result["text"] or "..."
+        segments = _split_segments(reply)
+        if on_segment and len(segments) > 1:
+            for seg in segments[:-1]:
+                await on_segment(seg)
+                await asyncio.sleep(_SEGMENT_DELAY)
+        last_seg = segments[-1]
+        full_reply = "\n".join(segments)
         if is_group:
-            self._timeline.add(group_id, role="assistant", content=reply)
+            self._timeline.add(group_id, role="assistant", content=full_reply)
             self._timeline.set_input_tokens(group_id, result["input_tokens"])
         else:
-            self._short_term.add(session_id, "assistant", reply)
+            self._short_term.add(session_id, "assistant", full_reply)
             self._short_term.set_input_tokens(session_id, result["input_tokens"])
-        return reply
+        return last_seg
 
     # ------------------------------------------------------------------
     # Compact — 私聊

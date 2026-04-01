@@ -78,6 +78,22 @@ Configured in `pyproject.toml`. RUF001/RUF002/RUF003 are ignored to allow Chines
 - NapCat 使用 NTQQ 协议，支持手机 QQ 同时在线（多设备共存）
 - Bot QQ 号：10000（Amadeus），主群：100001
 
+### 构建与更新
+
+`soul/` 目录通过 volume 挂载进容器（`./soul:/app/soul:ro`），修改 `soul/` 下的文件（identities.md、instruction.md）后只需重启 bot 即可生效：
+
+```bash
+docker compose restart bot
+```
+
+如果修改了 Python 代码、依赖或 Dockerfile，需要重新构建镜像：
+
+```bash
+docker compose up bot -d --build
+```
+
+**注意**：`docker compose restart` 不会重新构建镜像，只适用于配置文件变更。代码变更必须用 `--build`。
+
 ## Language
 
 This is a Chinese-language project. Code comments, docstrings, user-facing strings, and identity configurations are in Chinese.

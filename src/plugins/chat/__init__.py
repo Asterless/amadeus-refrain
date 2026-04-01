@@ -186,6 +186,9 @@ async def handle_chat(bot: Bot, event: MessageEvent) -> None:
 
     ctx = ToolContext(bot=bot, user_id=str(event.user_id), group_id=group_id)
 
+    async def send_segment(text: str) -> None:
+        await bot.send(event, text)
+
     try:
         reply = await _llm.chat(
             session_id=sid,
@@ -194,9 +197,11 @@ async def handle_chat(bot: Bot, event: MessageEvent) -> None:
             identity=identity,
             group_id=group_id,
             ctx=ctx,
+            on_segment=send_segment,
         )
     except Exception:
         logger.exception("chat error")
         reply = "出错了，请稍后再试"
 
-    await chat.finish(reply)
+    if reply:
+        await chat.finish(reply)
