@@ -1,37 +1,19 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
 ## Commands
 
 ```bash
-# Install dependencies
-uv sync
+uv sync                        # Install dependencies
+uv run ruff check src/         # Lint (add --fix for auto-fix)
+uv run pytest                  # Run all tests
+uv run pytest tests/test_identity.py::test_name -v  # Single test
+uv run pyright                 # Type check
 
 # Run bot locally (needs NapCat running)
-docker compose up napcat -d
-uv run python bot.py
+docker compose up napcat -d && uv run python bot.py
 
 # Run everything in Docker
 docker compose up -d
-
-# Lint
-uv run ruff check src/
-
-# Lint with auto-fix
-uv run ruff check --fix src/
-
-# Run all tests
-uv run pytest
-
-# Run a single test file
-uv run pytest tests/test_identity.py
-
-# Run a specific test
-uv run pytest tests/test_identity.py::test_function_name -v
-
-# Type check
-uv run pyright
 ```
 
 ## Architecture
@@ -69,30 +51,25 @@ All config flows through `src/config.py:BotConfig` (Pydantic model), loaded from
 
 Configured in `pyproject.toml`. RUF001/RUF002/RUF003 are ignored to allow Chinese full-width characters throughout the codebase.
 
-### Docker / NapCat 运维
+### Docker / NapCat Operations
 
-- NapCat 持久化两个目录：`./napcat/config` (配置) 和 `./napcat/data` (QQ 会话/设备指纹)
-- 设备指纹存储在 `napcat/data/nt_qq/global/nt_data/mmkv/`，登录 token 在 `napcat/data/nt_qq/global/nt_data/Login/`
-- **重启用 `docker compose restart napcat`**，不要 `down` + `up`（避免设备指纹变化触发风控）
-- 掉线通常是腾讯风控，不是持久化问题。风控后 token 服务端失效，需重新登录
-- NapCat 使用 NTQQ 协议，支持手机 QQ 同时在线（多设备共存）
-- Bot QQ 号：10000（Amadeus），主群：100001
+- NapCat persists two directories: `./napcat/config` (config) and `./napcat/data` (QQ sessions/device fingerprint)
+- Device fingerprint at `napcat/data/nt_qq/global/nt_data/mmkv/`, login tokens at `napcat/data/nt_qq/global/nt_data/Login/`
+- **Always use `docker compose restart napcat`** — never `down` + `up` (device fingerprint changes trigger Tencent anti-fraud)
+- Disconnections are usually Tencent anti-fraud, not persistence issues. Tokens are server-side invalidated; re-login required.
+- NapCat uses NTQQ protocol, supports concurrent mobile QQ sessions (multi-device)
+- Bot QQ ID: 10000 (Amadeus), main group: 100001
 
-### 构建与更新
+### Building & Updating
 
-`soul/` 目录通过 volume 挂载进容器（`./soul:/app/soul:ro`），修改 `soul/` 下的文件（identities.md、instruction.md）后只需重启 bot 即可生效：
-
-```bash
-docker compose restart bot
-```
-
-如果修改了 Python 代码、依赖或 Dockerfile，需要重新构建镜像：
+`soul/` is volume-mounted (`./soul:/app/soul:ro`). Changes to soul files take effect with a restart:
 
 ```bash
-docker compose up bot -d --build
+docker compose restart bot           # Soul/config changes only
+docker compose up bot -d --build     # Code/dependency/Dockerfile changes
 ```
 
-**注意**：`docker compose restart` 不会重新构建镜像，只适用于配置文件变更。代码变更必须用 `--build`。
+**Note**: `docker compose restart` does not rebuild images.
 
 ## Language
 
