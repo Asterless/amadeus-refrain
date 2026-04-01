@@ -6,6 +6,7 @@ Markdown 格式：
     - priority: 10
     - keywords: 关键词1, 关键词2
     - groups: 群号1, 群号2
+    - proactive: （可选）主动插话判断规则
 
     人设描述正文...
 """
