@@ -118,7 +118,47 @@ async def _on_connect(bot: Bot) -> None:
         )
     except Exception:
         logger.exception("failed to load group history")
+        return
     logger.info("Bot 就绪，开始接收消息 ✓")
+
+    # 对历史消息触发一次主动插话检测，避免更新期间遗漏回复
+    identity = _identity_mgr.resolve()
+    for gid in group_ids:
+        if not _timeline.get_messages(gid):
+            continue
+
+        async def _make_reply_callback(g: str) -> None:
+            """为指定群构造主动回复回调。"""
+
+            async def _on_reply(decision: ProactiveDecision) -> None:
+                hint_parts: list[str] = []
+                if decision["reply_to"]:
+                    hint_parts.append(f"回复对象：{decision['reply_to']}")
+                if decision["reason"]:
+                    hint_parts.append(f"插话原因：{decision['reason']}")
+                proactive_hint = "（主动插话）" + "，".join(hint_parts) if hint_parts else "（主动插话）"
+
+                sid = f"group_{g}"
+                ctx = ToolContext(bot=bot, user_id="", group_id=g)
+
+                async def send_segment(seg_text: str) -> None:
+                    await bot.send_group_msg(group_id=int(g), message=seg_text)
+
+                reply = await _llm.chat(
+                    session_id=sid,
+                    user_id="",
+                    user_text=f"[{proactive_hint}]",
+                    identity=identity,
+                    group_id=g,
+                    ctx=ctx,
+                    on_segment=send_segment,
+                )
+                if reply:
+                    await bot.send_group_msg(group_id=int(g), message=reply)
+
+            _proactive.notify(g, identity, _on_reply)
+
+        await _make_reply_callback(gid)
 
 
 def _session_id(event: MessageEvent) -> str:
