@@ -193,7 +193,7 @@ class ProactiveEvaluator:
                     except Exception:
                         logger.exception("proactive reply error | group={}", group_id)
                 else:
-                    logger.info("batch | group={} decided not to reply", group_id)
+                    logger.debug("batch | group={} decided not to reply", group_id)
 
                 # 检查是否有 pending
                 if batch.pending and not decisions:
@@ -253,12 +253,18 @@ class ProactiveEvaluator:
 
     async def _evaluate(self, group_id: str, identity: Identity) -> list[ProactiveDecision]:
         """调用廉价模型判断是否应插话。失败最多重试 3 次。"""
+        t0 = time.monotonic()
         try:
             text = await self._call_decision_api(group_id, identity)
-            logger.info("proactive eval | group={} raw={!r}", group_id, text[:100])
+            elapsed = time.monotonic() - t0
+            logger.debug("proactive eval | group={} elapsed={:.1f}s raw={!r}", group_id, elapsed, text[:100])
             return self._parse_decision(text)
         except Exception:
-            logger.warning("proactive eval failed after retries | group={}", group_id, exc_info=True)
+            elapsed = time.monotonic() - t0
+            logger.warning(
+                "proactive eval failed after retries | group={} elapsed={:.1f}s",
+                group_id, elapsed, exc_info=True,
+            )
             return []
 
     @retry(

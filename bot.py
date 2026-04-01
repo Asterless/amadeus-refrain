@@ -35,17 +35,39 @@ logger.add(
     level="DEBUG",
 )
 
+_c = _bot_config
 logger.info("========== Bot 启动配置 ==========")
-logger.info(f"LLM model:   {_bot_config.llm.model}")
-logger.info(f"LLM base_url: {_bot_config.llm.base_url}")
-logger.info(f"LLM max_tokens: {_bot_config.llm.max_tokens}")
-logger.info(f"Context max_tokens: {_bot_config.llm.context.max_context_tokens}")
-logger.info(f"Memory dir:  {_bot_config.memory.dir}")
-logger.info(f"Soul dir:    {_bot_config.soul.dir}")
-logger.info(f"Log dir:     {_bot_config.log.dir}")
-logger.info(f"NapCat API:  {_bot_config.napcat.api_url}")
-logger.info(f"群聊白名单:  {_bot_config.group.allowed_groups or '无限制'}")
-logger.info(f"私聊白名单:  {_bot_config.allowed_private_users or '无限制'}")
+logger.info(
+    "[LLM] model={} base_url={} max_tokens={}",
+    _c.llm.model, _c.llm.base_url, _c.llm.max_tokens,
+)
+logger.info(
+    "[Context] max_tokens={} compact_ratio={}",
+    _c.llm.context.max_context_tokens, _c.llm.context.compact_ratio,
+)
+logger.info(
+    "[Cache] warm={} interval={}msgs ttl={}s",
+    _c.llm.cache.warm_enabled, _c.llm.cache.warm_interval_messages, _c.llm.cache.warm_ttl_seconds,
+)
+logger.info(
+    "[Proactive] enabled={} model={} cooldown={}s batch={}/{}s",
+    _c.proactive.enabled, _c.proactive.model, _c.proactive.cooldown,
+    _c.proactive.batch_size, _c.proactive.batch_timeout,
+)
+logger.info(
+    "[Group] timeline={} history_load={} allowed={}",
+    _c.group.max_timeline_messages, _c.group.history_load_count,
+    _c.group.allowed_groups or "无限制",
+)
+logger.info(
+    "[Access] superusers={} private_whitelist={}",
+    _c.superusers or "无", _c.allowed_private_users or "无限制",
+)
+logger.info(
+    "[Dirs] soul={} memory={} log={}",
+    _c.soul.dir, _c.memory.dir, _c.log.dir,
+)
+logger.info("[NapCat] api_url={}", _c.napcat.api_url)
 logger.info("==================================")
 
 nonebot.init()

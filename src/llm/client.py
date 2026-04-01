@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -269,6 +270,7 @@ class LLMClient:
         on_segment: Callable[[str], Awaitable[None]] | None = None,
     ) -> str:
         logger.info("chat | session={} user={} identity={} text={!r}", session_id, user_id, identity.id, user_text[:80])
+        t0 = time.monotonic()
 
         is_group = group_id is not None and self._timeline is not None
 
@@ -304,7 +306,11 @@ class LLMClient:
                         await asyncio.sleep(_SEGMENT_DELAY)
                 last_seg = segments[-1]
                 full_reply = "\n".join(segments)
-                logger.info("reply | session={} len={} segments={}", session_id, len(full_reply), len(segments))
+                elapsed = time.monotonic() - t0
+                logger.info(
+                    "reply | session={} len={} segments={} elapsed={:.1f}s",
+                    session_id, len(full_reply), len(segments), elapsed,
+                )
                 if is_group:
                     self._timeline.add(group_id, role="assistant", content=full_reply)
                     self._timeline.set_input_tokens(group_id, result["input_tokens"])

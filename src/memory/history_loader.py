@@ -20,7 +20,7 @@ async def load_group_history(
             try:
                 await _load_one_group(session, napcat_url, gid, timeline, count)
             except Exception:
-                logger.warning("load_history failed | group={}", gid)
+                logger.warning("load_history failed | group={}", gid, exc_info=True)
 
 
 async def _load_one_group(
