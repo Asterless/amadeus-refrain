@@ -67,3 +67,36 @@ async def test_build_no_group_context_for_private(tmp_path: object) -> None:
 
     assert len(blocks) == 1
     assert "当前在群" not in blocks[0]["text"]
+
+
+async def test_proactive_injected_in_group(long_term: LongTermMemory) -> None:
+    """identity.proactive should be appended to system blocks in group chat."""
+    identity = Identity(
+        id="test", name="测试", personality="性格描述",
+        proactive="【主动发言规则】积极参与群聊",
+    )
+    builder = PromptBuilder(long_term=long_term, instruction="")
+    blocks = await builder.build_blocks(identity=identity, user_id="u1", group_id="g1")
+    assert "【主动发言规则】积极参与群聊" in blocks[0]["text"]
+
+
+async def test_proactive_not_injected_without_group(long_term: LongTermMemory) -> None:
+    """identity.proactive should NOT be injected for private chat."""
+    identity = Identity(
+        id="test", name="测试", personality="性格描述",
+        proactive="【主动发言规则】积极参与群聊",
+    )
+    builder = PromptBuilder(long_term=long_term, instruction="")
+    blocks = await builder.build_blocks(identity=identity, user_id="u1", group_id=None)
+    assert "【主动发言规则】" not in blocks[0]["text"]
+
+
+async def test_proactive_not_injected_when_none(long_term: LongTermMemory) -> None:
+    """No proactive rules when identity.proactive is None."""
+    identity = Identity(
+        id="test", name="测试", personality="性格描述",
+        proactive=None,
+    )
+    builder = PromptBuilder(long_term=long_term, instruction="")
+    blocks = await builder.build_blocks(identity=identity, user_id="u1", group_id="g1")
+    assert "主动发言" not in blocks[0]["text"]

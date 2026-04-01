@@ -50,6 +50,8 @@ class PromptBuilder:
             base_text += "\n\n" + self._instruction
         if group_id:
             base_text += f"\n\n【当前在群 {group_id} 中对话】"
+        if group_id and identity.proactive:
+            base_text += "\n\n" + identity.proactive
         blocks.append({"type": "text", "text": base_text, "cache_control": {"type": "ephemeral"}})
 
         # 层 2：用户记忆（偶尔更新，单独一层以便 cache）
