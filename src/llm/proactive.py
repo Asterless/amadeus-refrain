@@ -15,6 +15,7 @@ from typing import Any, TypedDict
 
 import aiohttp
 from loguru import logger
+from tenacity import before_sleep_log, retry, stop_after_attempt, wait_exponential
 
 from src.identity.models import Identity
 from src.memory.group_timeline import GroupTimeline
@@ -96,17 +97,24 @@ class ProactiveEvaluator:
         # 如果正在评估，标记 pending 然后返回
         if batch.evaluating:
             batch.pending = True
+            logger.debug("batch | group={} pending (evaluating) msgs={}", group_id, batch.msg_count)
             return
 
         # 取消旧的 debounce 定时器
         if batch.debounce_task and not batch.debounce_task.done():
             batch.debounce_task.cancel()
+            logger.debug("batch | group={} debounce reset msgs={}", group_id, batch.msg_count)
 
         # 达到 batch_size → 立即触发
         if batch.msg_count >= self._batch_size:
+            logger.info("batch | group={} full ({} msgs) → evaluating", group_id, batch.msg_count)
             self._fire(group_id, identity, on_reply)
         else:
             # 启动 debounce 定时器
+            logger.debug(
+                "batch | group={} debounce start msgs={} wait={:.1f}s",
+                group_id, batch.msg_count, self._batch_timeout,
+            )
             batch.debounce_task = asyncio.create_task(
                 self._debounce(group_id, identity, on_reply),
             )
@@ -132,6 +140,9 @@ class ProactiveEvaluator:
         """等待消息间隙后触发评估。"""
         try:
             await asyncio.sleep(self._batch_timeout)
+            batch = self._batches.get(group_id)
+            msgs = batch.msg_count if batch else 0
+            logger.info("batch | group={} debounce fired ({} msgs) → evaluating", group_id, msgs)
             self._fire(group_id, identity, on_reply)
         except asyncio.CancelledError:
             pass  # 被新消息取消了，正常
@@ -164,19 +175,29 @@ class ProactiveEvaluator:
         if not batch:
             return
 
+        round_num = 0
         try:
             while True:
+                round_num += 1
+                logger.info("batch | group={} eval round={}", group_id, round_num)
                 decision = await self._evaluate(group_id, identity)
                 if decision:
                     self._last_proactive[group_id] = time.monotonic()
+                    logger.info(
+                        "batch | group={} decided to reply | reply_to={!r} reason={!r}",
+                        group_id, decision["reply_to"], decision["reason"],
+                    )
                     try:
                         await on_reply(decision)
                     except Exception:
                         logger.exception("proactive reply error | group={}", group_id)
+                else:
+                    logger.info("batch | group={} decided not to reply", group_id)
 
                 # 检查是否有 pending
                 if batch.pending and not decision:
                     # 只在上一轮没决定插话时才续评（插话后进冷却期）
+                    logger.info("batch | group={} has pending msgs → re-evaluating", group_id)
                     batch.pending = False
                     batch.msg_count = 0
                     continue
@@ -185,6 +206,7 @@ class ProactiveEvaluator:
             batch.evaluating = False
             batch.pending = False
             batch.msg_count = 0
+            logger.info("batch | group={} eval done rounds={}", group_id, round_num)
 
     # ------------------------------------------------------------------
     # 决策 prompt 构建
@@ -220,7 +242,23 @@ class ProactiveEvaluator:
         return self._session
 
     async def _evaluate(self, group_id: str, identity: Identity) -> ProactiveDecision | None:
-        """调用廉价模型判断是否应插话。"""
+        """调用廉价模型判断是否应插话。失败最多重试 3 次。"""
+        try:
+            text = await self._call_decision_api(group_id, identity)
+            logger.info("proactive eval | group={} raw={!r}", group_id, text[:100])
+            return self._parse_decision(text)
+        except Exception:
+            logger.warning("proactive eval failed after retries | group={}", group_id, exc_info=True)
+            return None
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=5),
+        before_sleep=before_sleep_log(logger, "WARNING"),  # type: ignore[arg-type]
+        reraise=True,
+    )
+    async def _call_decision_api(self, group_id: str, identity: Identity) -> str:
+        """调用决策 API，带 tenacity 重试。"""
         system, messages = self.build_decision_prompt(group_id, identity)
 
         body = {
@@ -236,25 +274,16 @@ class ProactiveEvaluator:
             "anthropic-version": "2024-10-22",
         }
 
-        try:
-            async with self._get_session().post(
-                f"{self._base_url}/v1/messages", json=body, headers=headers,
-            ) as resp:
-                resp.raise_for_status()
-                data = await resp.json()
-                text = ""
-                for block in data.get("content", []):
-                    if block.get("type") == "text":
-                        text += block.get("text", "")
-                text = text.strip()
-                logger.info("proactive eval | group={} raw={!r}", group_id, text[:100])
-                return self._parse_decision(text)
-        except TimeoutError:
-            logger.warning("proactive eval timeout | group={}", group_id)
-            return None
-        except Exception:
-            logger.warning("proactive eval error | group={}", group_id, exc_info=True)
-            return None
+        async with self._get_session().post(
+            f"{self._base_url}/v1/messages", json=body, headers=headers,
+        ) as resp:
+            resp.raise_for_status()
+            data = await resp.json()
+            text = ""
+            for block in data.get("content", []):
+                if block.get("type") == "text":
+                    text += block.get("text", "")
+            return text.strip()
 
     @staticmethod
     def _parse_decision(text: str) -> ProactiveDecision | None:
