@@ -5,20 +5,20 @@ from typing import Any
 import aiohttp
 from loguru import logger
 
-from src.memory.group_context import GroupContext
+from src.memory.group_timeline import GroupTimeline
 
 
 async def load_group_history(
     napcat_url: str,
     group_ids: list[str],
-    group_context: GroupContext,
+    timeline: GroupTimeline,
     count: int = 30,
 ) -> None:
     """从 NapCat 拉取多个群的历史消息。"""
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
         for gid in group_ids:
             try:
-                await _load_one_group(session, napcat_url, gid, group_context, count)
+                await _load_one_group(session, napcat_url, gid, timeline, count)
             except Exception:
                 logger.warning("load_history failed | group={}", gid)
 
@@ -27,7 +27,7 @@ async def _load_one_group(
     session: aiohttp.ClientSession,
     napcat_url: str,
     group_id: str,
-    group_context: GroupContext,
+    timeline: GroupTimeline,
     count: int,
 ) -> None:
     async with session.post(
@@ -62,7 +62,7 @@ async def _load_one_group(
 
         # 仅填充群聊上下文（包含发言人信息），不填充短期记忆
         # 短期记忆仅记录实际的 bot 交互，避免多用户消息的角色混乱
-        group_context.add(group_id, user_id, nickname, text)
+        timeline.add(group_id, role="user", speaker=f"{nickname}({user_id})", content=text)
         loaded += 1
 
     logger.info("history loaded | group={} messages={}", group_id, loaded)

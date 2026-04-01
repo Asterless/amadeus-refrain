@@ -1,16 +1,16 @@
 """对话插件：@机器人 触发，Soul + 记忆 + 工具 + 多人设 + 群聊上下文。"""
 
 from loguru import logger
-from nonebot import get_driver, get_plugin_config, on_command, on_message
+from nonebot import get_driver, on_command, on_message
 from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, Message, MessageEvent
 from nonebot.params import CommandArg
 from nonebot.rule import to_me
 
-from src.config import BotConfig
+from src.config_loader import load_config
 from src.identity import IdentityManager
 from src.llm.client import LLMClient
 from src.llm.prompt import PromptBuilder
-from src.memory.group_context import GroupContext
+from src.memory.group_timeline import GroupTimeline
 from src.memory.history_loader import load_group_history
 from src.memory.long_term import LongTermMemory
 from src.memory.short_term import ShortTermMemory
@@ -23,22 +23,23 @@ from src.tools.memory_tool import RecallMemoryTool, SaveMemoryTool
 from src.tools.web_fetch import WebFetchTool
 
 driver = get_driver()
-bot_config = get_plugin_config(BotConfig)
 
 _llm: LLMClient
 _identity_mgr: IdentityManager
-_group_ctx: GroupContext
+_timeline: GroupTimeline
 _short_term: ShortTermMemory
 
 
 @driver.on_startup
 async def _init() -> None:
-    global _llm, _identity_mgr, _group_ctx, _short_term
+    global _llm, _identity_mgr, _timeline, _short_term
 
-    long_term = LongTermMemory(memory_dir=bot_config.memory_dir)
+    bot_config = load_config()
+
+    long_term = LongTermMemory(memory_dir=bot_config.memory.dir)
     _short_term = ShortTermMemory()
-    _group_ctx = GroupContext()
-    prompt_builder = PromptBuilder(long_term=long_term, group_context=_group_ctx)
+    _timeline = GroupTimeline(max_messages=bot_config.group.max_timeline_messages)
+    prompt_builder = PromptBuilder(long_term=long_term)
     short_term = _short_term
 
     superusers = bot_config.superusers | driver.config.superusers
@@ -54,17 +55,22 @@ async def _init() -> None:
     tools.register(SendGroupMsgTool(superusers))
 
     _identity_mgr = IdentityManager()
-    await _identity_mgr.load_file(bot_config.identities_file)
+    await _identity_mgr.load_file(bot_config.identity.file)
 
     _llm = LLMClient(
-        base_url=bot_config.llm_base_url,
-        api_key=bot_config.llm_api_key,
-        model=bot_config.llm_model,
+        base_url=bot_config.llm.base_url,
+        api_key=bot_config.llm.api_key,
+        model=bot_config.llm.model,
         prompt_builder=prompt_builder,
         short_term=short_term,
         tools=tools,
-        max_context_tokens=bot_config.llm_max_context_tokens,
-        compact_ratio=bot_config.compact_ratio,
+        max_context_tokens=bot_config.llm.context.max_context_tokens,
+        compact_ratio=bot_config.llm.context.compact_ratio,
+        group_timeline=_timeline,
+        long_term=long_term,
+        warm_enabled=bot_config.llm.cache.warm_enabled,
+        warm_interval_messages=bot_config.llm.cache.warm_interval_messages,
+        warm_ttl_seconds=bot_config.llm.cache.warm_ttl_seconds,
     )
 
 
@@ -77,13 +83,15 @@ async def _shutdown() -> None:
 async def _on_connect(bot: Bot) -> None:
     """Bot 连接后拉取群历史消息，填充群聊上下文。"""
     try:
+        bot_config = load_config()
         group_list: list[dict[str, object]] = await bot.get_group_list()
         group_ids = [str(g["group_id"]) for g in group_list]
         logger.info("loading history | groups={}", len(group_ids))
         await load_group_history(
-            napcat_url=bot_config.napcat_api_url,
+            napcat_url=bot_config.napcat.api_url,
             group_ids=group_ids,
-            group_context=_group_ctx,
+            timeline=_timeline,
+            count=bot_config.group.history_load_count,
         )
     except Exception:
         logger.exception("failed to load group history")
@@ -106,12 +114,16 @@ async def collect_group_context(bot: Bot, event: GroupMessageEvent) -> None:
     if not text:
         return
     nickname = event.sender.nickname or str(event.user_id)
-    _group_ctx.add(
-        group_id=str(event.group_id),
-        user_id=str(event.user_id),
-        nickname=nickname,
+    group_id = str(event.group_id)
+    _timeline.add(
+        group_id,
+        role="user",
+        speaker=f"{nickname}({event.user_id})",
         content=text,
     )
+
+    identity = _identity_mgr.resolve(_session_id(event), group_id, text)
+    _llm.maybe_warm(group_id, identity, str(event.user_id))
 
 
 # ── /identity 切换人设 ──
