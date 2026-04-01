@@ -31,13 +31,26 @@ def _is_safe_url(url: str) -> bool:
             addrinfos = socket.getaddrinfo(hostname, None)
             for _, _, _, _, sockaddr in addrinfos:
                 addr = ipaddress.ip_address(sockaddr[0])
-                if not addr.is_global:
+                if not _is_allowed_addr(addr):
                     return False
             return bool(addrinfos)
         except socket.gaierror:
             return False
     except Exception:
         return False
+
+
+# 198.18.0.0/15: 本地 DNS 代理（如 Clash）将公网域名解析到此段
+_PROXY_DNS_NET = ipaddress.ip_network("198.18.0.0/15")
+
+
+def _is_allowed_addr(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """判断地址是否允许访问：全局地址或代理 DNS 段。"""
+    if addr.is_global:
+        return True
+    if isinstance(addr, ipaddress.IPv4Address) and addr in _PROXY_DNS_NET:
+        return True
+    return False
 
 
 class WebFetchTool(Tool):
