@@ -123,6 +123,18 @@ def _session_id(event: MessageEvent) -> str:
     return f"private_{event.user_id}"
 
 
+def _render_message(msg: Message) -> str:
+    """将消息段转为可读文本，保留 @提及 信息。"""
+    parts: list[str] = []
+    for seg in msg:
+        if seg.type == "text":
+            parts.append(seg.data.get("text", ""))
+        elif seg.type == "at":
+            qq = seg.data.get("qq", "")
+            parts.append(f"@{qq}")
+    return "".join(parts).strip()
+
+
 # ── 群聊上下文收集（仅群消息） ──
 
 group_listener = on_message(priority=1, block=False)
@@ -135,7 +147,7 @@ async def collect_group_context(bot: Bot, event: GroupMessageEvent) -> None:
     # Skip bot's own messages — already added as role="assistant" by LLMClient
     if str(event.user_id) == bot.self_id:
         return
-    text = event.get_plaintext().strip()
+    text = _render_message(event.get_message())
     if not text:
         return
 
@@ -169,7 +181,7 @@ async def handle_chat(bot: Bot, event: MessageEvent) -> None:
         if _allowed_private_users and event.user_id not in _allowed_private_users:
             return
 
-    user_text = event.get_plaintext().strip()
+    user_text = _render_message(event.get_message())
     if not user_text:
         return
 
