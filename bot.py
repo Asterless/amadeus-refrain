@@ -35,6 +35,19 @@ logger.add(
     level="DEBUG",
 )
 
+logger.info("========== Bot 启动配置 ==========")
+logger.info(f"LLM model:   {_bot_config.llm.model}")
+logger.info(f"LLM base_url: {_bot_config.llm.base_url}")
+logger.info(f"LLM max_tokens: {_bot_config.llm.max_tokens}")
+logger.info(f"Context max_tokens: {_bot_config.llm.context.max_context_tokens}")
+logger.info(f"Memory dir:  {_bot_config.memory.dir}")
+logger.info(f"Soul dir:    {_bot_config.soul.dir}")
+logger.info(f"Log dir:     {_bot_config.log.dir}")
+logger.info(f"NapCat API:  {_bot_config.napcat.api_url}")
+logger.info(f"群聊白名单:  {_bot_config.group.allowed_groups or '无限制'}")
+logger.info(f"私聊白名单:  {_bot_config.allowed_private_users or '无限制'}")
+logger.info("==================================")
+
 nonebot.init()
 
 driver = nonebot.get_driver()
