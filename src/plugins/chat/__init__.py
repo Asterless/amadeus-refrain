@@ -1,9 +1,10 @@
-"""对话插件：@机器人 触发，Soul + 记忆 + 工具 + 多人设 + 群聊上下文。"""
+"""对话插件：@机器人 触发，Soul + 记忆 + 工具 + 群聊上下文 + 主动插话。"""
+
+import asyncio
 
 from loguru import logger
-from nonebot import get_driver, on_command, on_message
-from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, Message, MessageEvent
-from nonebot.params import CommandArg
+from nonebot import get_driver, on_message
+from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, MessageEvent
 from nonebot.rule import to_me
 
 from src.config_loader import load_config
@@ -63,7 +64,7 @@ async def _init() -> None:
 
     _identity_mgr = IdentityManager()
     soul_dir = bot_config.soul.dir
-    await _identity_mgr.load_file(f"{soul_dir}/identities.md")
+    await _identity_mgr.load_file(f"{soul_dir}/identity.md")
 
     _llm = LLMClient(
         base_url=bot_config.llm.base_url,
@@ -86,6 +87,7 @@ async def _init() -> None:
         model=bot_config.proactive.model,
         api_key=bot_config.llm.api_key,
         base_url=bot_config.llm.base_url,
+        enabled=bot_config.proactive.enabled,
         timeout=bot_config.proactive.timeout,
         context_lines=bot_config.proactive.context_lines,
         cooldown=bot_config.proactive.cooldown,
@@ -151,64 +153,51 @@ async def collect_group_context(bot: Bot, event: GroupMessageEvent) -> None:
         content=text,
     )
 
-    identity = _identity_mgr.resolve(_session_id(event), group_id, text)
+    identity = _identity_mgr.resolve()
     _llm.maybe_warm(group_id, identity, str(event.user_id))
 
-    # 主动插话评估
+    # 主动插话评估（后台任务，不阻塞消息收集）
     if not _proactive.should_evaluate(group_id, identity):
         return
 
-    should_reply = await _proactive.evaluate(group_id, identity)
-    if not should_reply:
-        return
+    async def _proactive_task() -> None:
+        decision = await _proactive.evaluate(group_id, identity)
+        if not decision:
+            return
 
-    sid = _session_id(event)
-    ctx = ToolContext(bot=bot, user_id=str(event.user_id), group_id=group_id)
+        # 构造上下文提示，让主模型知道为什么要插话、回复谁
+        hint_parts: list[str] = []
+        if decision["reply_to"]:
+            hint_parts.append(f"回复对象：{decision['reply_to']}")
+        if decision["reason"]:
+            hint_parts.append(f"插话原因：{decision['reason']}")
+        proactive_hint = "（主动插话）" + "，".join(hint_parts) if hint_parts else "（主动插话）"
 
-    async def send_segment(seg_text: str) -> None:
-        await bot.send_group_msg(group_id=event.group_id, message=seg_text)
+        sid = _session_id(event)
+        ctx = ToolContext(bot=bot, user_id=str(event.user_id), group_id=group_id)
 
-    try:
-        reply = await _llm.chat(
-            session_id=sid,
-            user_id=str(event.user_id),
-            user_text=text,
-            identity=identity,
-            group_id=group_id,
-            ctx=ctx,
-            on_segment=send_segment,
-        )
-    except Exception:
-        logger.exception("proactive chat error | group={}", group_id)
-        return
+        async def send_segment(seg_text: str) -> None:
+            await bot.send_group_msg(group_id=event.group_id, message=seg_text)
 
-    if reply:
-        await bot.send_group_msg(group_id=event.group_id, message=reply)
+        try:
+            reply = await _llm.chat(
+                session_id=sid,
+                user_id=str(event.user_id),
+                user_text=f"[{proactive_hint}] {text}",
+                identity=identity,
+                group_id=group_id,
+                ctx=ctx,
+                on_segment=send_segment,
+            )
+        except Exception:
+            logger.exception("proactive chat error | group={}", group_id)
+            return
 
+        if reply:
+            await bot.send_group_msg(group_id=event.group_id, message=reply)
 
-# ── /identity 切换人设 ──
-
-identity_cmd = on_command("identity", aliases={"人设"}, priority=5, block=True)
-
-
-@identity_cmd.handle()
-async def handle_identity(event: MessageEvent, args: Message = CommandArg()) -> None:  # noqa: B008
-    arg = args.extract_plain_text().strip()
-    sid = _session_id(event)
-
-    if not arg or arg == "list":
-        names = [f"{'* ' if i.id == 'default' else ''}{i.id} ({i.name})" for i in _identity_mgr.list_identities()]
-        await identity_cmd.finish("可用人设:\n" + "\n".join(names))
-
-    if arg == "reset":
-        _identity_mgr.clear_override(sid)
-        await identity_cmd.finish("已恢复自动匹配人设")
-
-    result = _identity_mgr.switch(sid, arg)
-    if result:
-        await identity_cmd.finish(f"已切换人设: {result.name}")
-    else:
-        await identity_cmd.finish(f"未找到人设: {arg}")
+    task = asyncio.create_task(_proactive_task())
+    task.add_done_callback(lambda _: None)
 
 
 # ── 对话 ──
@@ -232,7 +221,7 @@ async def handle_chat(bot: Bot, event: MessageEvent) -> None:
 
     sid = _session_id(event)
     group_id = str(event.group_id) if isinstance(event, GroupMessageEvent) else None
-    identity = _identity_mgr.resolve(sid, group_id, user_text)
+    identity = _identity_mgr.resolve()
 
     ctx = ToolContext(bot=bot, user_id=str(event.user_id), group_id=group_id)
 

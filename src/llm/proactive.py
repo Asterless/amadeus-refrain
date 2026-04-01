@@ -3,14 +3,22 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
-from typing import Any
+from typing import Any, TypedDict
 
 import aiohttp
 from loguru import logger
 
 from src.identity.models import Identity
 from src.memory.group_timeline import GroupTimeline
+
+
+class ProactiveDecision(TypedDict):
+    """决策结果。"""
+
+    reason: str  # 插话原因
+    reply_to: str  # 回复对象（昵称或 "大家"）
 
 
 class ProactiveEvaluator:
@@ -23,10 +31,12 @@ class ProactiveEvaluator:
         model: str,
         api_key: str,
         base_url: str,
+        enabled: bool = True,
         timeout: float = 3.0,
         context_lines: int = 20,
         cooldown: int = 60,
     ) -> None:
+        self._enabled = enabled
         self._timeline = timeline
         self._model = model
         self._api_key = api_key
@@ -45,6 +55,8 @@ class ProactiveEvaluator:
 
     def should_evaluate(self, group_id: str, identity: Identity) -> bool:
         """快速判断是否需要进行决策调用。"""
+        if not self._enabled:
+            return False
         if not identity.proactive:
             return False
 
@@ -86,7 +98,7 @@ class ProactiveEvaluator:
             else:
                 lines.append(msg["content"])
 
-        system = [{"type": "text", "text": identity.proactive}]
+        system = [{"type": "text", "text": f"{identity.personality}\n\n{identity.proactive}"}]
         user_messages = [{"role": "user", "content": "\n".join(lines)}]
         return system, user_messages
 
@@ -94,8 +106,8 @@ class ProactiveEvaluator:
     # 决策调用
     # ------------------------------------------------------------------
 
-    async def evaluate(self, group_id: str, identity: Identity) -> bool:
-        """调用廉价模型判断是否应插话。返回 True 表示应插话。"""
+    async def evaluate(self, group_id: str, identity: Identity) -> ProactiveDecision | None:
+        """调用廉价模型判断是否应插话。返回决策详情或 None（不插话）。"""
         lock = self._locks.setdefault(group_id, asyncio.Lock())
 
         async with lock:
@@ -105,7 +117,7 @@ class ProactiveEvaluator:
                 "model": self._model,
                 "system": system,
                 "messages": messages,
-                "max_tokens": 8,
+                "max_tokens": 128,
                 "stream": False,
             }
             headers = {
@@ -124,20 +136,48 @@ class ProactiveEvaluator:
                     for block in data.get("content", []):
                         if block.get("type") == "text":
                             text += block.get("text", "")
-                    decision = text.strip().upper().startswith("YES")
-                    logger.info(
-                        "proactive eval | group={} decision={} raw={!r}",
-                        group_id, decision, text.strip()[:50],
-                    )
+                    text = text.strip()
+                    logger.info("proactive eval | group={} raw={!r}", group_id, text[:100])
+
+                    decision = self._parse_decision(text)
                     if decision:
                         self._last_proactive[group_id] = time.monotonic()
+                        logger.info(
+                            "proactive eval | group={} reply_to={!r} reason={!r}",
+                            group_id, decision["reply_to"], decision["reason"],
+                        )
                     return decision
             except TimeoutError:
                 logger.warning("proactive eval timeout | group={}", group_id)
-                return False
+                return None
             except Exception:
                 logger.warning("proactive eval error | group={}", group_id, exc_info=True)
-                return False
+                return None
+
+    @staticmethod
+    def _parse_decision(text: str) -> ProactiveDecision | None:
+        """解析决策模型的 JSON 输出。容错处理各种格式。"""
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            # 尝试从文本中提取 JSON
+            start = text.find("{")
+            end = text.rfind("}") + 1
+            if start >= 0 and end > start:
+                try:
+                    parsed = json.loads(text[start:end])
+                except json.JSONDecodeError:
+                    return None
+            else:
+                return None
+
+        if not parsed.get("reply"):
+            return None
+
+        return ProactiveDecision(
+            reason=str(parsed.get("reason", "")),
+            reply_to=str(parsed.get("reply_to", "")),
+        )
 
     def record_proactive(self, group_id: str) -> None:
         """手动记录插话时间（用于外部调用成功后）。"""

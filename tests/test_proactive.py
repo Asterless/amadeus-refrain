@@ -6,7 +6,7 @@ import time
 import pytest
 
 from src.identity.models import Identity
-from src.llm.proactive import ProactiveEvaluator
+from src.llm.proactive import ProactiveDecision, ProactiveEvaluator
 from src.memory.group_timeline import GroupTimeline
 
 
@@ -66,6 +66,7 @@ class TestBuildDecisionPrompt:
         ev = ProactiveEvaluator(timeline=timeline, model="m", api_key="k", base_url="u", context_lines=3)
         identity = _make_identity(proactive="只在有人求助时插话")
         system, messages = ev.build_decision_prompt("g1", identity)
+        assert "测试人设" in system[0]["text"]
         assert "只在有人求助时插话" in system[0]["text"]
         # messages 的 user content 应包含最近 3 条消息
         user_text = messages[0]["content"]
@@ -82,3 +83,30 @@ class TestBuildDecisionPrompt:
         assert "消息3" in user_text
         assert "消息4" in user_text
         assert "消息0" not in user_text
+
+
+class TestParseDecision:
+    def test_valid_reply_true(self) -> None:
+        text = '{"reply": true, "reason": "有人问物理", "reply_to": "张三"}'
+        result = ProactiveEvaluator._parse_decision(text)
+        assert result == ProactiveDecision(reason="有人问物理", reply_to="张三")
+
+    def test_valid_reply_false(self) -> None:
+        text = '{"reply": false, "reason": "", "reply_to": ""}'
+        assert ProactiveEvaluator._parse_decision(text) is None
+
+    def test_json_embedded_in_text(self) -> None:
+        text = '好的，我来判断一下\n{"reply": true, "reason": "求助", "reply_to": "大家"}\n'
+        result = ProactiveEvaluator._parse_decision(text)
+        assert result is not None
+        assert result["reason"] == "求助"
+
+    def test_invalid_json(self) -> None:
+        assert ProactiveEvaluator._parse_decision("YES") is None
+
+    def test_missing_fields(self) -> None:
+        text = '{"reply": true}'
+        result = ProactiveEvaluator._parse_decision(text)
+        assert result is not None
+        assert result["reason"] == ""
+        assert result["reply_to"] == ""

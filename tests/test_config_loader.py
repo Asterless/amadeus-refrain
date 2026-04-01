@@ -202,8 +202,9 @@ model = "auto-detected-model"
 def test_proactive_config_defaults() -> None:
     from src.config import BotConfig
     config = BotConfig()
+    assert config.proactive.enabled is True
     assert config.proactive.model == "claude-haiku-4-5-20251001"
-    assert config.proactive.timeout == 3.0
+    assert config.proactive.timeout == 15.0
     assert config.proactive.context_lines == 20
     assert config.proactive.cooldown == 60
 

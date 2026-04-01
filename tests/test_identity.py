@@ -1,147 +1,62 @@
 import pytest
 
-from src.identity.manager import IdentityManager, _parse_markdown
+from src.identity.manager import IdentityManager, _parse_identity
 
 
-def test_parse_markdown() -> None:
+def test_parse_identity_basic() -> None:
     md = """\
-## default
-- name: 默认
+# 测试人设
 
-你是默认人设。
-
-## cat
-- name: 猫娘
-- priority: 10
-- keywords: 喵, 猫娘
-
-你是猫娘。
-- 说话带喵
+你是一个测试机器人。
+- 说话简洁
 """
-    identities = _parse_markdown(md)
-    assert len(identities) == 2
-
-    default = identities[0]
-    assert default.id == "default"
-    assert default.name == "默认"
-    assert "默认人设" in default.personality
-
-    cat = identities[1]
-    assert cat.id == "cat"
-    assert cat.priority == 10
-    assert cat.trigger.keywords == ["喵", "猫娘"]
-    assert "猫娘" in cat.personality
+    identity = _parse_identity(md)
+    assert identity is not None
+    assert identity.name == "测试人设"
+    assert "测试机器人" in identity.personality
+    assert identity.proactive is None
 
 
-def test_parse_markdown_with_groups() -> None:
+def test_parse_identity_with_proactive() -> None:
     md = """\
-## vip
-- name: VIP
-- groups: 111, 222
+# Bot
 
-VIP 人设。
+Bot 人设描述。
+
+## proactive
+
+有人求助时插话。
+用 JSON 回答。
 """
-    identities = _parse_markdown(md)
-    assert identities[0].trigger.groups == ["111", "222"]
+    identity = _parse_identity(md)
+    assert identity is not None
+    assert identity.name == "Bot"
+    assert "Bot 人设描述" in identity.personality
+    assert "proactive" not in identity.personality
+    assert identity.proactive == "有人求助时插话。\n用 JSON 回答。"
+
+
+def test_parse_identity_no_title() -> None:
+    md = "没有标题的内容"
+    assert _parse_identity(md) is None
 
 
 def test_resolve_default() -> None:
     mgr = IdentityManager()
-    identity = mgr.resolve("s1", None, "随便说说")
+    identity = mgr.resolve()
     assert identity.id == "default"
+    assert identity.name == "默认"
 
 
-@pytest.fixture
-def loaded_mgr(tmp_path: object) -> IdentityManager:
-    """同步构建 IdentityManager，直接用 _parse_markdown 填充。"""
+@pytest.mark.asyncio
+async def test_load_file(tmp_path: object) -> None:
+    import pathlib
+
+    p = pathlib.Path(str(tmp_path)) / "identity.md"
+    p.write_text("# 红莉栖\n\n天才物理学家。\n")
+
     mgr = IdentityManager()
-    md = """\
-## default
-- name: 默认
-
-默认人设。
-
-## cat
-- name: 猫娘
-- priority: 10
-- keywords: 喵, 猫
-
-猫娘人设。
-
-## vip
-- name: VIP群
-- priority: 5
-- groups: 999
-
-VIP 人设。
-"""
-    for identity in _parse_markdown(md):
-        mgr._identities[identity.id] = identity
-        if identity.id == "default":
-            mgr._default = identity
-    return mgr
-
-
-def test_resolve_by_keyword(loaded_mgr: IdentityManager) -> None:
-    identity = loaded_mgr.resolve("s1", "888", "小猫咪你好呀")
-    assert identity.id == "cat"
-
-
-def test_resolve_by_group(loaded_mgr: IdentityManager) -> None:
-    identity = loaded_mgr.resolve("s1", "999", "普通消息")
-    assert identity.id == "vip"
-
-
-def test_resolve_no_match(loaded_mgr: IdentityManager) -> None:
-    identity = loaded_mgr.resolve("s1", "888", "普通消息")
-    assert identity.id == "default"
-
-
-def test_switch_override(loaded_mgr: IdentityManager) -> None:
-    result = loaded_mgr.switch("s1", "cat")
-    assert result is not None
-    assert result.id == "cat"
-
-    # 覆盖后无论消息内容如何都返回 cat
-    identity = loaded_mgr.resolve("s1", None, "普通消息")
-    assert identity.id == "cat"
-
-
-def test_switch_nonexistent(loaded_mgr: IdentityManager) -> None:
-    assert loaded_mgr.switch("s1", "nonexistent") is None
-
-
-def test_clear_override(loaded_mgr: IdentityManager) -> None:
-    loaded_mgr.switch("s1", "cat")
-    loaded_mgr.clear_override("s1")
-    identity = loaded_mgr.resolve("s1", None, "普通消息")
-    assert identity.id == "default"
-
-
-def test_keyword_priority_over_group(loaded_mgr: IdentityManager) -> None:
-    """cat(priority=10) > vip(priority=5)，即使在 vip 群里。"""
-    identity = loaded_mgr.resolve("s1", "999", "喵喵喵")
-    assert identity.id == "cat"
-
-
-def test_parse_markdown_with_proactive() -> None:
-    md = """\
-## bot
-- name: Bot
-- proactive: 只在有人求助时插话。回答 YES 或 NO。
-
-Bot 人设。
-"""
-    identities = _parse_markdown(md)
-    assert identities[0].proactive == "只在有人求助时插话。回答 YES 或 NO。"
-
-
-def test_parse_markdown_without_proactive() -> None:
-    md = """\
-## bot
-- name: Bot
-
-Bot 人设。
-"""
-    identities = _parse_markdown(md)
-    assert identities[0].proactive is None
+    await mgr.load_file(p)
+    identity = mgr.resolve()
+    assert identity.name == "红莉栖"
+    assert "天才物理学家" in identity.personality

@@ -1,14 +1,12 @@
-"""Identity 管理器：加载 Markdown 人设配置，按规则匹配当前人设。
+"""Identity 管理器：加载单人格 Markdown 配置。
 
 Markdown 格式：
-    ## identity_id
-    - name: 人设名称
-    - priority: 10
-    - keywords: 关键词1, 关键词2
-    - groups: 群号1, 群号2
-    - proactive: （可选）主动插话判断规则
+    # 人设名称
 
     人设描述正文...
+
+    ## proactive
+    （可选）主动插话判断规则，支持多行。
 """
 
 import re
@@ -16,58 +14,41 @@ from pathlib import Path
 
 import aiofiles
 
-from src.identity.models import Identity, TriggerRule
+from src.identity.models import Identity
 
-_MAX_OVERRIDES = 1000
-
-_SECTION_RE = re.compile(r"^##\s+(.+)$", re.MULTILINE)
-_META_RE = re.compile(r"^-\s+(\w+):\s*(.+)$")
+_TITLE_RE = re.compile(r"^#\s+(.+)$", re.MULTILINE)
+_PROACTIVE_RE = re.compile(r"^##\s+proactive\s*$", re.MULTILINE | re.IGNORECASE)
 
 
-def _parse_markdown(text: str) -> list[Identity]:
-    sections = _SECTION_RE.split(text)
-    identities: list[Identity] = []
-    for i in range(1, len(sections), 2):
-        identity_id = sections[i].strip()
-        body = sections[i + 1] if i + 1 < len(sections) else ""
+def _parse_identity(text: str) -> Identity | None:
+    """解析单人格 Markdown 文件。"""
+    m = _TITLE_RE.search(text)
+    if not m:
+        return None
 
-        meta: dict[str, str] = {}
-        personality_lines: list[str] = []
-        past_meta = False
+    name = m.group(1).strip()
+    body = text[m.end() :].strip()
 
-        for line in body.strip().splitlines():
-            if not past_meta:
-                m = _META_RE.match(line)
-                if m:
-                    meta[m.group(1)] = m.group(2).strip()
-                    continue
-                if not line.strip():
-                    continue
-                past_meta = True
-            personality_lines.append(line)
+    # 分割 personality 和 proactive
+    proactive: str | None = None
+    split = _PROACTIVE_RE.search(body)
+    if split:
+        personality = body[: split.start()].strip()
+        proactive = body[split.end() :].strip() or None
+    else:
+        personality = body
 
-        keywords = [k.strip() for k in meta.get("keywords", "").split(",") if k.strip()]
-        groups = [g.strip() for g in meta.get("groups", "").split(",") if g.strip()]
-        proactive = meta.get("proactive")
-
-        identities.append(
-            Identity(
-                id=identity_id,
-                name=meta.get("name", identity_id),
-                personality="\n".join(personality_lines).strip(),
-                trigger=TriggerRule(groups=groups, keywords=keywords),
-                priority=int(meta.get("priority", "0")),
-                proactive=proactive,
-            )
-        )
-    return identities
+    return Identity(
+        id="default",
+        name=name,
+        personality=personality,
+        proactive=proactive,
+    )
 
 
 class IdentityManager:
     def __init__(self) -> None:
-        self._identities: dict[str, Identity] = {}
-        self._default: Identity = _builtin_default()
-        self._overrides: dict[str, str] = {}
+        self._identity: Identity = _builtin_default()
 
     async def load_file(self, path: str | Path) -> None:
         p = Path(path)
@@ -75,51 +56,12 @@ class IdentityManager:
             return
         async with aiofiles.open(p, encoding="utf-8") as f:
             text = await f.read()
-        for identity in _parse_markdown(text):
-            self._identities[identity.id] = identity
-            if identity.id == "default":
-                self._default = identity
+        identity = _parse_identity(text)
+        if identity:
+            self._identity = identity
 
-    def resolve(self, session_id: str, group_id: str | None, text: str) -> Identity:
-        if session_id in self._overrides:
-            override_id = self._overrides[session_id]
-            if override_id in self._identities:
-                return self._identities[override_id]
-
-        candidates = sorted(self._identities.values(), key=lambda i: i.priority, reverse=True)
-        for identity in candidates:
-            if identity.id == "default":
-                continue
-            if _matches(identity, group_id, text):
-                return identity
-
-        return self._default
-
-    def switch(self, session_id: str, identity_id: str) -> Identity | None:
-        if identity_id not in self._identities:
-            return None
-        self._overrides[session_id] = identity_id
-        if len(self._overrides) > _MAX_OVERRIDES:
-            # 移除最早的一半覆盖
-            to_remove = list(self._overrides.keys())[: len(self._overrides) // 2]
-            for k in to_remove:
-                del self._overrides[k]
-        return self._identities[identity_id]
-
-    def clear_override(self, session_id: str) -> None:
-        self._overrides.pop(session_id, None)
-
-    def list_identities(self) -> list[Identity]:
-        return list(self._identities.values())
-
-
-def _matches(identity: Identity, group_id: str | None, text: str) -> bool:
-    rule = identity.trigger
-    if rule.groups and (not group_id or group_id not in rule.groups):
-        return False
-    if rule.keywords:
-        return any(kw in text for kw in rule.keywords)
-    return bool(rule.groups) and group_id is not None and group_id in rule.groups
+    def resolve(self) -> Identity:
+        return self._identity
 
 
 def _builtin_default() -> Identity:
