@@ -2,7 +2,7 @@
 
 from loguru import logger
 from nonebot import get_driver, on_message
-from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, MessageEvent
+from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, Message, MessageEvent
 from nonebot.rule import to_me
 
 from src.config_loader import load_config
@@ -148,7 +148,7 @@ async def _on_connect(bot: Bot) -> None:
                 ctx = ToolContext(bot=bot, user_id="", group_id=g)
 
                 async def send_segment(seg_text: str) -> None:
-                    await bot.send_group_msg(group_id=int(g), message=seg_text)
+                    await bot.send_group_msg(group_id=int(g), message=Message(seg_text))
 
                 reply = await _llm.chat(
                     session_id=sid,
@@ -160,7 +160,7 @@ async def _on_connect(bot: Bot) -> None:
                     on_segment=send_segment,
                 )
                 if reply:
-                    await bot.send_group_msg(group_id=int(g), message=reply)
+                    await bot.send_group_msg(group_id=int(g), message=Message(reply))
 
             _proactive.notify(g, identity, _on_reply)
 
@@ -222,7 +222,7 @@ async def collect_group_context(bot: Bot, event: GroupMessageEvent) -> None:
         ctx = ToolContext(bot=bot, user_id=str(event.user_id), group_id=group_id)
 
         async def send_segment(seg_text: str) -> None:
-            await bot.send_group_msg(group_id=event.group_id, message=seg_text)
+            await bot.send_group_msg(group_id=event.group_id, message=Message(seg_text))
 
         reply = await _llm.chat(
             session_id=sid,
@@ -235,7 +235,7 @@ async def collect_group_context(bot: Bot, event: GroupMessageEvent) -> None:
             proactive_hint=proactive_hint,
         )
         if reply:
-            await bot.send_group_msg(group_id=event.group_id, message=reply)
+            await bot.send_group_msg(group_id=event.group_id, message=Message(reply))
 
     _proactive.notify(group_id, identity, _on_proactive_reply)
 
@@ -266,7 +266,7 @@ async def handle_chat(bot: Bot, event: MessageEvent) -> None:
     ctx = ToolContext(bot=bot, user_id=str(event.user_id), group_id=group_id)
 
     async def send_segment(text: str) -> None:
-        await bot.send(event, text)
+        await bot.send(event, Message(text))
 
     try:
         reply = await _llm.chat(
@@ -283,4 +283,4 @@ async def handle_chat(bot: Bot, event: MessageEvent) -> None:
         reply = "出错了，请稍后再试"
 
     if reply:
-        await chat.finish(reply)
+        await chat.finish(Message(reply))
