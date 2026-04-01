@@ -8,8 +8,8 @@ from nonebot.rule import to_me
 from src.config_loader import load_config
 from src.identity import IdentityManager
 from src.llm.client import LLMClient
-from src.llm.proactive import ProactiveDecision, ProactiveEvaluator
 from src.llm.prompt import PromptBuilder, load_instruction
+from src.llm.scheduler import GroupChatScheduler
 from src.memory.group_timeline import GroupTimeline
 from src.memory.history_loader import load_group_history
 from src.memory.long_term import LongTermMemory
@@ -25,7 +25,7 @@ from src.tools.web_fetch import WebFetchTool
 driver = get_driver()
 
 _llm: LLMClient
-_proactive: ProactiveEvaluator
+_scheduler: GroupChatScheduler
 _identity_mgr: IdentityManager
 _timeline: GroupTimeline
 _short_term: ShortTermMemory
@@ -35,7 +35,7 @@ _allowed_private_users: set[int] = set()
 
 @driver.on_startup
 async def _init() -> None:
-    global _llm, _proactive, _identity_mgr, _timeline, _short_term, _allowed_groups, _allowed_private_users
+    global _llm, _scheduler, _identity_mgr, _timeline, _short_term, _allowed_groups, _allowed_private_users
 
     bot_config = load_config()
     _allowed_groups = set(bot_config.group.allowed_groups)
@@ -75,35 +75,28 @@ async def _init() -> None:
         compact_ratio=bot_config.llm.context.compact_ratio,
         group_timeline=_timeline,
         long_term=long_term,
-        warm_enabled=bot_config.llm.cache.warm_enabled,
-        warm_interval_messages=bot_config.llm.cache.warm_interval_messages,
-        warm_ttl_seconds=bot_config.llm.cache.warm_ttl_seconds,
     )
 
-    _proactive = ProactiveEvaluator(
+    _scheduler = GroupChatScheduler(
+        llm=_llm,
         timeline=_timeline,
-        model=bot_config.proactive.model,
-        api_key=bot_config.llm.api_key,
-        base_url=bot_config.llm.base_url,
-        enabled=bot_config.proactive.enabled,
-        timeout=bot_config.proactive.timeout,
-        context_lines=bot_config.proactive.context_lines,
-        cooldown=bot_config.proactive.cooldown,
-        batch_timeout=bot_config.proactive.batch_timeout,
-        batch_size=bot_config.proactive.batch_size,
+        identity_mgr=_identity_mgr,
+        debounce_seconds=bot_config.group.debounce_seconds,
+        batch_size=bot_config.group.batch_size,
     )
 
 
 @driver.on_shutdown
 async def _shutdown() -> None:
     await _llm.close()
-    await _proactive.close()
+    await _scheduler.close()
 
 
 @driver.on_bot_connect
 async def _on_connect(bot: Bot) -> None:
     """Bot 连接后拉取群历史消息，填充群聊上下文。"""
     _llm._bot_self_id = bot.self_id
+    _scheduler.set_bot(bot)
     try:
         bot_config = load_config()
         group_list: list[dict[str, object]] = await bot.get_group_list()
@@ -122,49 +115,6 @@ async def _on_connect(bot: Bot) -> None:
         logger.exception("failed to load group history")
         return
     logger.info("Bot 就绪，开始接收消息 ✓")
-
-    # 对历史消息触发一次主动插话检测，避免更新期间遗漏回复
-    identity = _identity_mgr.resolve()
-    for gid in group_ids:
-        if not _timeline.get_messages(gid):
-            continue
-
-        async def _make_reply_callback(g: str) -> None:
-            """为指定群构造主动回复回调。"""
-
-            async def _on_reply(decisions: list[ProactiveDecision]) -> None:
-                hint_parts: list[str] = []
-                for d in decisions:
-                    parts: list[str] = []
-                    if d["reply_to"]:
-                        parts.append(f"回复对象：{d['reply_to']}")
-                    if d["reason"]:
-                        parts.append(f"原因：{d['reason']}")
-                    if parts:
-                        hint_parts.append("，".join(parts))
-                proactive_hint = "（主动插话）" + "；".join(hint_parts) if hint_parts else "（主动插话）"
-
-                sid = f"group_{g}"
-                ctx = ToolContext(bot=bot, user_id="", group_id=g)
-
-                async def send_segment(seg_text: str) -> None:
-                    await bot.send_group_msg(group_id=int(g), message=Message(seg_text))
-
-                reply = await _llm.chat(
-                    session_id=sid,
-                    user_id="",
-                    user_text=f"[{proactive_hint}]",
-                    identity=identity,
-                    group_id=g,
-                    ctx=ctx,
-                    on_segment=send_segment,
-                )
-                if reply:
-                    await bot.send_group_msg(group_id=int(g), message=Message(reply))
-
-            _proactive.notify(g, identity, _on_reply)
-
-        await _make_reply_callback(gid)
 
 
 def _session_id(event: MessageEvent) -> str:
@@ -198,46 +148,10 @@ async def collect_group_context(bot: Bot, event: GroupMessageEvent) -> None:
         content=text,
     )
 
-    # 被 @ 的消息交给 chat handler，不走主动插话
     if event.is_tome():
         return
 
-    identity = _identity_mgr.resolve()
-    _llm.maybe_warm(group_id, identity, str(event.user_id))
-
-    # 主动插话：通知 evaluator，由其 debounce/batch 后决定是否评估
-    async def _on_proactive_reply(decisions: list[ProactiveDecision]) -> None:
-        hint_parts: list[str] = []
-        for d in decisions:
-            parts: list[str] = []
-            if d["reply_to"]:
-                parts.append(f"回复对象：{d['reply_to']}")
-            if d["reason"]:
-                parts.append(f"原因：{d['reason']}")
-            if parts:
-                hint_parts.append("，".join(parts))
-        proactive_hint = "【主动插话】" + "；".join(hint_parts) if hint_parts else "【主动插话】"
-
-        sid = _session_id(event)
-        ctx = ToolContext(bot=bot, user_id=str(event.user_id), group_id=group_id)
-
-        async def send_segment(seg_text: str) -> None:
-            await bot.send_group_msg(group_id=event.group_id, message=Message(seg_text))
-
-        reply = await _llm.chat(
-            session_id=sid,
-            user_id=str(event.user_id),
-            user_text=text,
-            identity=identity,
-            group_id=group_id,
-            ctx=ctx,
-            on_segment=send_segment,
-            proactive_hint=proactive_hint,
-        )
-        if reply:
-            await bot.send_group_msg(group_id=event.group_id, message=Message(reply))
-
-    _proactive.notify(group_id, identity, _on_proactive_reply)
+    _scheduler.notify(group_id)
 
 
 # ── 对话 ──
@@ -262,6 +176,9 @@ async def handle_chat(bot: Bot, event: MessageEvent) -> None:
     sid = _session_id(event)
     group_id = str(event.group_id) if isinstance(event, GroupMessageEvent) else None
     identity = _identity_mgr.resolve()
+
+    if group_id:
+        _scheduler.interrupt(group_id)
 
     ctx = ToolContext(bot=bot, user_id=str(event.user_id), group_id=group_id)
 
