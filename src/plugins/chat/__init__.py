@@ -103,6 +103,7 @@ async def _on_connect(bot: Bot) -> None:
         )
     except Exception:
         logger.exception("failed to load group history")
+    logger.info("Bot 就绪，开始接收消息 ✓")
 
 
 def _session_id(event: MessageEvent) -> str:
