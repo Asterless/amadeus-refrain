@@ -227,6 +227,9 @@ async def handle_chat(bot: Bot, event: MessageEvent) -> None:
     except Exception:
         logger.exception("chat error")
         reply = "出错了，请稍后再试"
+    finally:
+        if group_id:
+            _scheduler.release(group_id)
 
     if reply:
         await chat.finish(Message(reply))

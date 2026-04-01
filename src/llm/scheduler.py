@@ -18,12 +18,13 @@ if TYPE_CHECKING:
 
 
 class _GroupSlot:
-    __slots__ = ("debounce_task", "msg_count", "running_task")
+    __slots__ = ("debounce_task", "interrupted", "msg_count", "running_task")
 
     def __init__(self) -> None:
         self.debounce_task: asyncio.Task[None] | None = None
         self.running_task: asyncio.Task[None] | None = None
         self.msg_count: int = 0
+        self.interrupted: bool = False
 
 
 class GroupChatScheduler:
@@ -61,9 +62,9 @@ class GroupChatScheduler:
         slot = self._slots.setdefault(group_id, _GroupSlot())
         slot.msg_count += 1
 
-        # If a chat() is already running, don't schedule another
-        if slot.running_task and not slot.running_task.done():
-            logger.debug("scheduler | group={} running, skip (msgs={})", group_id, slot.msg_count)
+        # If a chat() is running or @bot is being handled, don't schedule
+        if slot.interrupted or (slot.running_task and not slot.running_task.done()):
+            logger.debug("scheduler | group={} busy, skip (msgs={})", group_id, slot.msg_count)
             return
 
         # Cancel old debounce
@@ -95,6 +96,13 @@ class GroupChatScheduler:
             logger.info("scheduler | group={} running task cancelled by @bot", group_id)
 
         slot.msg_count = 0
+        slot.interrupted = True
+
+    def release(self, group_id: str) -> None:
+        """Called after @bot chat completes. Re-enables scheduler for this group."""
+        slot = self._slots.get(group_id)
+        if slot:
+            slot.interrupted = False
 
     async def close(self) -> None:
         """Cancel all pending tasks on shutdown."""
