@@ -63,6 +63,7 @@ async def test_basic_chat(llm: LLMClient, identity: Identity) -> None:
         identity=identity,
     )
     print(f"[basic_chat] reply: {reply}")
+    assert reply is not None
     assert len(reply) > 0
     assert reply != "..."
 
@@ -76,6 +77,7 @@ async def test_tool_call_datetime(llm: LLMClient, identity: Identity) -> None:
         identity=identity,
     )
     print(f"[tool_datetime] reply: {reply}")
+    assert reply is not None
     assert len(reply) > 0
 
 
@@ -90,6 +92,7 @@ async def test_tool_call_memory(llm: LLMClient, identity: Identity) -> None:
         ctx=ctx,
     )
     print(f"[tool_memory] reply: {reply}")
+    assert reply is not None
     assert len(reply) > 0
 
 
@@ -98,4 +101,5 @@ async def test_multi_turn(llm: LLMClient, identity: Identity) -> None:
     await llm.chat(session_id="test_s4", user_id="11111", user_text="我最喜欢的颜色是蓝色", identity=identity)
     reply = await llm.chat(session_id="test_s4", user_id="11111", user_text="我刚才说我最喜欢什么颜色？", identity=identity)
     print(f"[multi_turn] reply: {reply}")
+    assert reply is not None
     assert "蓝" in reply

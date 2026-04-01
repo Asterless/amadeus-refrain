@@ -46,13 +46,8 @@ logger.info(
     _c.llm.context.max_context_tokens, _c.llm.context.compact_ratio,
 )
 logger.info(
-    "[Cache] warm={} interval={}msgs ttl={}s",
-    _c.llm.cache.warm_enabled, _c.llm.cache.warm_interval_messages, _c.llm.cache.warm_ttl_seconds,
-)
-logger.info(
-    "[Proactive] enabled={} model={} cooldown={}s batch={}/{}s",
-    _c.proactive.enabled, _c.proactive.model, _c.proactive.cooldown,
-    _c.proactive.batch_size, _c.proactive.batch_timeout,
+    "[Group] debounce={:.1f}s batch_size={}",
+    _c.group.debounce_seconds, _c.group.batch_size,
 )
 logger.info(
     "[Group] timeline={} history_load={} allowed={}",
