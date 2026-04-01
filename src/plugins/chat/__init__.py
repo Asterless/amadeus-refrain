@@ -1,7 +1,5 @@
 """对话插件：@机器人 触发，Soul + 记忆 + 工具 + 群聊上下文 + 主动插话。"""
 
-import asyncio
-
 from loguru import logger
 from nonebot import get_driver, on_message
 from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, MessageEvent
@@ -10,7 +8,7 @@ from nonebot.rule import to_me
 from src.config_loader import load_config
 from src.identity import IdentityManager
 from src.llm.client import LLMClient
-from src.llm.proactive import ProactiveEvaluator
+from src.llm.proactive import ProactiveDecision, ProactiveEvaluator
 from src.llm.prompt import PromptBuilder, load_instruction
 from src.memory.group_timeline import GroupTimeline
 from src.memory.history_loader import load_group_history
@@ -91,6 +89,8 @@ async def _init() -> None:
         timeout=bot_config.proactive.timeout,
         context_lines=bot_config.proactive.context_lines,
         cooldown=bot_config.proactive.cooldown,
+        batch_timeout=bot_config.proactive.batch_timeout,
+        batch_size=bot_config.proactive.batch_size,
     )
 
 
@@ -156,16 +156,8 @@ async def collect_group_context(bot: Bot, event: GroupMessageEvent) -> None:
     identity = _identity_mgr.resolve()
     _llm.maybe_warm(group_id, identity, str(event.user_id))
 
-    # 主动插话评估（后台任务，不阻塞消息收集）
-    if not _proactive.should_evaluate(group_id, identity):
-        return
-
-    async def _proactive_task() -> None:
-        decision = await _proactive.evaluate(group_id, identity)
-        if not decision:
-            return
-
-        # 构造上下文提示，让主模型知道为什么要插话、回复谁
+    # 主动插话：通知 evaluator，由其 debounce/batch 后决定是否评估
+    async def _on_proactive_reply(decision: ProactiveDecision) -> None:
         hint_parts: list[str] = []
         if decision["reply_to"]:
             hint_parts.append(f"回复对象：{decision['reply_to']}")
@@ -179,25 +171,19 @@ async def collect_group_context(bot: Bot, event: GroupMessageEvent) -> None:
         async def send_segment(seg_text: str) -> None:
             await bot.send_group_msg(group_id=event.group_id, message=seg_text)
 
-        try:
-            reply = await _llm.chat(
-                session_id=sid,
-                user_id=str(event.user_id),
-                user_text=f"[{proactive_hint}] {text}",
-                identity=identity,
-                group_id=group_id,
-                ctx=ctx,
-                on_segment=send_segment,
-            )
-        except Exception:
-            logger.exception("proactive chat error | group={}", group_id)
-            return
-
+        reply = await _llm.chat(
+            session_id=sid,
+            user_id=str(event.user_id),
+            user_text=f"[{proactive_hint}] {text}",
+            identity=identity,
+            group_id=group_id,
+            ctx=ctx,
+            on_segment=send_segment,
+        )
         if reply:
             await bot.send_group_msg(group_id=event.group_id, message=reply)
 
-    task = asyncio.create_task(_proactive_task())
-    task.add_done_callback(lambda _: None)
+    _proactive.notify(group_id, identity, _on_proactive_reply)
 
 
 # ── 对话 ──

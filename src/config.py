@@ -55,6 +55,8 @@ class ProactiveConfig(BaseModel):
     timeout: float = 15.0  # 决策调用超时（秒）
     context_lines: int = 20  # 传给决策模型的最近消息条数
     cooldown: int = 60  # 主动插话后冷却时间（秒）
+    batch_timeout: float = 5.0  # 消息间隙多久触发评估（秒）
+    batch_size: int = 10  # 最多攒多少条消息强制触发评估
 
 
 class GroupConfig(BaseModel):
