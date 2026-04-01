@@ -116,6 +116,11 @@ async def _on_connect(bot: Bot) -> None:
         return
     logger.info("Bot 就绪，开始接收消息 ✓")
 
+    # Evaluate history for each group — catch up on missed messages
+    for gid in group_ids:
+        if _timeline.get_messages(gid):
+            _scheduler.trigger(gid)
+
 
 def _session_id(event: MessageEvent) -> str:
     if isinstance(event, GroupMessageEvent):

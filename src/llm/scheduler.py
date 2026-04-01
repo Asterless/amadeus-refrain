@@ -79,6 +79,17 @@ class GroupChatScheduler:
             logger.debug("scheduler | group={} debounce start (msgs={})", group_id, slot.msg_count)
             slot.debounce_task = asyncio.create_task(self._debounce(group_id))
 
+    def trigger(self, group_id: str) -> None:
+        """Immediately fire a chat for this group (no debounce). Used at startup."""
+        identity = self._identity_mgr.resolve()
+        if identity.proactive is None:
+            return
+        slot = self._slots.setdefault(group_id, _GroupSlot())
+        if slot.running_task and not slot.running_task.done():
+            return
+        logger.info("scheduler | group={} trigger (startup)", group_id)
+        self._fire(group_id)
+
     def interrupt(self, group_id: str) -> None:
         """Called when @bot. Cancels debounce and running task for this group."""
         slot = self._slots.get(group_id)
