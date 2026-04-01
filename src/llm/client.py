@@ -173,8 +173,16 @@ class LLMClient:
         warm_enabled: bool = True,
         warm_interval_messages: int = 10,
         warm_ttl_seconds: int = 300,
+        bot_self_id: str = "",
     ) -> None:
-        self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120, sock_read=30))
+        connector = aiohttp.TCPConnector(
+            enable_cleanup_closed=True,
+            keepalive_timeout=15,
+        )
+        self._session = aiohttp.ClientSession(
+            connector=connector,
+            timeout=aiohttp.ClientTimeout(total=120, sock_read=30),
+        )
         self._base_url = base_url
         self._api_key = api_key
         self._model = model
@@ -189,6 +197,7 @@ class LLMClient:
         self._warm_interval = warm_interval_messages
         self._warm_ttl = warm_ttl_seconds
         self._warming = False
+        self._bot_self_id = bot_self_id
 
     async def close(self) -> None:
         await self._session.close()
@@ -287,7 +296,9 @@ class LLMClient:
                 await self._compact(session_id)
             messages = self._build_private_messages(session_id)
 
-        system_blocks = await self._prompt.build_blocks(identity=identity, user_id=user_id, group_id=group_id)
+        system_blocks = await self._prompt.build_blocks(
+            identity=identity, user_id=user_id, group_id=group_id, bot_self_id=self._bot_self_id,
+        )
 
         # 主动插话：将回复对象提示作为对话消息注入，不污染 timeline
         if proactive_hint:
@@ -491,7 +502,9 @@ class LLMClient:
     async def _warm_cache(self, group_id: str, identity: Identity, user_id: str) -> None:
         """后台缓存预热：用 max_tokens=1 触发一次 API 调用以刷新缓存。"""
         try:
-            system_blocks = await self._prompt.build_blocks(identity=identity, user_id=user_id, group_id=group_id)
+            system_blocks = await self._prompt.build_blocks(
+                identity=identity, user_id=user_id, group_id=group_id, bot_self_id=self._bot_self_id,
+            )
             messages = self._build_group_messages(group_id)
 
             tool_defs: list[dict[str, Any]] | None = None

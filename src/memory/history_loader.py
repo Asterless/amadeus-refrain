@@ -13,12 +13,13 @@ async def load_group_history(
     group_ids: list[str],
     timeline: GroupTimeline,
     count: int = 30,
+    bot_self_id: str = "",
 ) -> None:
     """从 NapCat 拉取多个群的历史消息。"""
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
         for gid in group_ids:
             try:
-                await _load_one_group(session, napcat_url, gid, timeline, count)
+                await _load_one_group(session, napcat_url, gid, timeline, count, bot_self_id)
             except Exception:
                 logger.warning("load_history failed | group={}", gid, exc_info=True)
 
@@ -29,6 +30,7 @@ async def _load_one_group(
     group_id: str,
     timeline: GroupTimeline,
     count: int,
+    bot_self_id: str = "",
 ) -> None:
     async with session.post(
         f"{napcat_url}/get_group_msg_history",
@@ -60,9 +62,11 @@ async def _load_one_group(
         if not text:
             continue
 
-        # 仅填充群聊上下文（包含发言人信息），不填充短期记忆
-        # 短期记忆仅记录实际的 bot 交互，避免多用户消息的角色混乱
-        timeline.add(group_id, role="user", speaker=f"{nickname}({user_id})", content=text)
+        # Bot's own messages → role="assistant"; others → role="user" with speaker tag
+        if bot_self_id and user_id == bot_self_id:
+            timeline.add(group_id, role="assistant", content=text)
+        else:
+            timeline.add(group_id, role="user", speaker=f"{nickname}({user_id})", content=text)
         loaded += 1
 
     logger.info("history loaded | group={} messages={}", group_id, loaded)

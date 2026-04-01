@@ -103,6 +103,7 @@ async def _shutdown() -> None:
 @driver.on_bot_connect
 async def _on_connect(bot: Bot) -> None:
     """Bot 连接后拉取群历史消息，填充群聊上下文。"""
+    _llm._bot_self_id = bot.self_id
     try:
         bot_config = load_config()
         group_list: list[dict[str, object]] = await bot.get_group_list()
@@ -115,6 +116,7 @@ async def _on_connect(bot: Bot) -> None:
             group_ids=group_ids,
             timeline=_timeline,
             count=bot_config.group.history_load_count,
+            bot_self_id=bot.self_id,
         )
     except Exception:
         logger.exception("failed to load group history")
@@ -179,6 +181,9 @@ group_listener = on_message(priority=1, block=False)
 @group_listener.handle()
 async def collect_group_context(bot: Bot, event: GroupMessageEvent) -> None:
     if _allowed_groups and event.group_id not in _allowed_groups:
+        return
+    # Skip bot's own messages — already added as role="assistant" by LLMClient
+    if str(event.user_id) == bot.self_id:
         return
     text = event.get_plaintext().strip()
     if not text:
