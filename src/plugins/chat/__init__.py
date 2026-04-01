@@ -9,6 +9,7 @@ from nonebot.rule import to_me
 from src.config_loader import load_config
 from src.identity import IdentityManager
 from src.llm.client import LLMClient
+from src.llm.proactive import ProactiveEvaluator
 from src.llm.prompt import PromptBuilder, load_instruction
 from src.memory.group_timeline import GroupTimeline
 from src.memory.history_loader import load_group_history
@@ -25,6 +26,7 @@ from src.tools.web_fetch import WebFetchTool
 driver = get_driver()
 
 _llm: LLMClient
+_proactive: ProactiveEvaluator
 _identity_mgr: IdentityManager
 _timeline: GroupTimeline
 _short_term: ShortTermMemory
@@ -34,7 +36,7 @@ _allowed_private_users: set[int] = set()
 
 @driver.on_startup
 async def _init() -> None:
-    global _llm, _identity_mgr, _timeline, _short_term, _allowed_groups, _allowed_private_users
+    global _llm, _proactive, _identity_mgr, _timeline, _short_term, _allowed_groups, _allowed_private_users
 
     bot_config = load_config()
     _allowed_groups = set(bot_config.group.allowed_groups)
@@ -79,10 +81,21 @@ async def _init() -> None:
         warm_ttl_seconds=bot_config.llm.cache.warm_ttl_seconds,
     )
 
+    _proactive = ProactiveEvaluator(
+        timeline=_timeline,
+        model=bot_config.proactive.model,
+        api_key=bot_config.llm.api_key,
+        base_url=bot_config.llm.base_url,
+        timeout=bot_config.proactive.timeout,
+        context_lines=bot_config.proactive.context_lines,
+        cooldown=bot_config.proactive.cooldown,
+    )
+
 
 @driver.on_shutdown
 async def _shutdown() -> None:
     await _llm.close()
+    await _proactive.close()
 
 
 @driver.on_bot_connect
@@ -124,6 +137,11 @@ async def collect_group_context(bot: Bot, event: GroupMessageEvent) -> None:
     text = event.get_plaintext().strip()
     if not text:
         return
+
+    # 被 @ 的消息交给 chat handler，不走主动插话
+    if event.is_tome():
+        return
+
     nickname = event.sender.nickname or str(event.user_id)
     group_id = str(event.group_id)
     _timeline.add(
@@ -135,6 +153,37 @@ async def collect_group_context(bot: Bot, event: GroupMessageEvent) -> None:
 
     identity = _identity_mgr.resolve(_session_id(event), group_id, text)
     _llm.maybe_warm(group_id, identity, str(event.user_id))
+
+    # 主动插话评估
+    if not _proactive.should_evaluate(group_id, identity):
+        return
+
+    should_reply = await _proactive.evaluate(group_id, identity)
+    if not should_reply:
+        return
+
+    sid = _session_id(event)
+    ctx = ToolContext(bot=bot, user_id=str(event.user_id), group_id=group_id)
+
+    async def send_segment(seg_text: str) -> None:
+        await bot.send_group_msg(group_id=event.group_id, message=seg_text)
+
+    try:
+        reply = await _llm.chat(
+            session_id=sid,
+            user_id=str(event.user_id),
+            user_text=text,
+            identity=identity,
+            group_id=group_id,
+            ctx=ctx,
+            on_segment=send_segment,
+        )
+    except Exception:
+        logger.exception("proactive chat error | group={}", group_id)
+        return
+
+    if reply:
+        await bot.send_group_msg(group_id=event.group_id, message=reply)
 
 
 # ── /identity 切换人设 ──
