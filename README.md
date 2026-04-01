@@ -64,7 +64,7 @@ docker compose up -d
 
 ## 人设配置
 
-编辑 `identities.md`，使用 Markdown 格式定义人设：
+编辑 `soul/identities.md`，使用 Markdown 格式定义人设：
 
 ```markdown
 ## catgirl
@@ -109,7 +109,9 @@ uv run pytest
 
 ```
 ├── bot.py                  # 入口
-├── identities.md           # 人设配置
+├── soul/                   # 人设与指令配置
+│   ├── identities.md       # 人设定义
+│   └── instruction.md      # 行为指令
 ├── docker-compose.yml      # NapCat + Bot 编排
 ├── src/
 │   ├── config.py           # Pydantic 配置

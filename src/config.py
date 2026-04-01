@@ -35,10 +35,10 @@ class MemoryConfig(BaseModel):
     dir: str = "data/memories"
 
 
-class IdentityConfig(BaseModel):
-    """身份配置文件路径。"""
+class SoulConfig(BaseModel):
+    """人设与指令配置目录。"""
 
-    file: str = "identities.md"
+    dir: str = "soul"
 
 
 class GroupConfig(BaseModel):
@@ -60,7 +60,7 @@ class BotConfig(BaseModel):
 
     llm: LLMConfig = LLMConfig()
     memory: MemoryConfig = MemoryConfig()
-    identity: IdentityConfig = IdentityConfig()
+    soul: SoulConfig = SoulConfig()
     group: GroupConfig = GroupConfig()
     napcat: NapcatConfig = NapcatConfig()
     superusers: set[str] = set()

@@ -40,7 +40,7 @@ def test_load_defaults_without_file(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert cfg.llm.cache.warm_interval_messages == 10
     assert cfg.llm.cache.warm_ttl_seconds == 300
     assert cfg.memory.dir == "data/memories"
-    assert cfg.identity.file == "identities.md"
+    assert cfg.soul.dir == "soul"
     assert cfg.group.max_timeline_messages == 200
     assert cfg.group.history_load_count == 30
     assert cfg.napcat.api_url == "http://localhost:29300"
@@ -79,8 +79,8 @@ warm_ttl_seconds = 600
 [memory]
 dir = "custom/memories"
 
-[identity]
-file = "custom_identities.md"
+[soul]
+dir = "custom_soul"
 
 [group]
 max_timeline_messages = 100
@@ -103,7 +103,7 @@ api_url = "http://napcat:29300"
     assert cfg.llm.cache.warm_interval_messages == 5
     assert cfg.llm.cache.warm_ttl_seconds == 600
     assert cfg.memory.dir == "custom/memories"
-    assert cfg.identity.file == "custom_identities.md"
+    assert cfg.soul.dir == "custom_soul"
     assert cfg.group.max_timeline_messages == 100
     assert cfg.group.history_load_count == 50
     assert cfg.napcat.api_url == "http://napcat:29300"

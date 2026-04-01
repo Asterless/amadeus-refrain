@@ -54,9 +54,9 @@ QQ ←→ NapCat (WS) ←→ NoneBot2 (bot.py)
 ### Key Design Decisions
 
 - **Raw Anthropic API via aiohttp SSE** — no SDK. `src/llm/client.py` manually parses SSE `data:` lines to extract text deltas and tool_use blocks. Adding tool calls means touching the `_call_api` function.
-- **Prompt Caching strategy** — System blocks (identity + tool guide, user memory) use `cache_control: ephemeral`. Group chat context goes into messages (not system) because it changes every turn. The second-to-last history message gets `cache_control` to maximize cache hits on conversation prefix.
+- **Prompt Caching strategy** — System blocks (identity + instruction, user memory) use `cache_control: ephemeral`. Group chat context goes into messages (not system) because it changes every turn. The second-to-last history message gets `cache_control` to maximize cache hits on conversation prefix.
 - **Tool framework** — Tools extend `src/tools/base.py:Tool` ABC (name, description, parameters as JSON Schema, async execute). Registered in `ToolRegistry`, converted to Anthropic format via OpenAI-style intermediate. `ToolContext` carries the Bot instance and event metadata.
-- **Identity system** — Parsed from `identities.md` (Markdown with `## id` sections + `- key: value` metadata). Resolution order: manual override > keyword/group match (by priority) > default.
+- **Soul directory** — `soul/` holds personality & instruction configs. `identities.md` defines personas (Markdown with `## id` sections + `- key: value` metadata); `instruction.md` holds behavioral directives injected into the system prompt. Resolution order: manual override > keyword/group match (by priority) > default.
 - **Memory layers** — Short-term: in-memory deque per session. Long-term: `.qmd` files per user in `data/memories/` with profile + events sections. Group context: in-memory deque of recent messages per group.
 - **Session IDs** — `group_{group_id}` for group chats, `private_{user_id}` for DMs. Used as keys for short-term memory and identity overrides.
 - **History bootstrap** — On bot connect, `history_loader.py` pulls recent messages from NapCat HTTP API for all groups, populating both short-term memory and group context.

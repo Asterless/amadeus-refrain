@@ -9,7 +9,7 @@ from nonebot.rule import to_me
 from src.config_loader import load_config
 from src.identity import IdentityManager
 from src.llm.client import LLMClient
-from src.llm.prompt import PromptBuilder
+from src.llm.prompt import PromptBuilder, load_instruction
 from src.memory.group_timeline import GroupTimeline
 from src.memory.history_loader import load_group_history
 from src.memory.long_term import LongTermMemory
@@ -43,7 +43,8 @@ async def _init() -> None:
     long_term = LongTermMemory(memory_dir=bot_config.memory.dir)
     _short_term = ShortTermMemory()
     _timeline = GroupTimeline(max_messages=bot_config.group.max_timeline_messages)
-    prompt_builder = PromptBuilder(long_term=long_term)
+    instruction = load_instruction(bot_config.soul.dir)
+    prompt_builder = PromptBuilder(long_term=long_term, instruction=instruction)
     short_term = _short_term
 
     superusers = bot_config.superusers | driver.config.superusers
@@ -59,7 +60,8 @@ async def _init() -> None:
     tools.register(SendGroupMsgTool(superusers))
 
     _identity_mgr = IdentityManager()
-    await _identity_mgr.load_file(bot_config.identity.file)
+    soul_dir = bot_config.soul.dir
+    await _identity_mgr.load_file(f"{soul_dir}/identities.md")
 
     _llm = LLMClient(
         base_url=bot_config.llm.base_url,
