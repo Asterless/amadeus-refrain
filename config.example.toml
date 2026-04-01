@@ -37,7 +37,7 @@ max_tokens = 1024
 # ---------------------------------------------------------------------------
 [llm.context]
 # 上下文窗口大小（token 数），超出后触发 compact
-max_context_tokens = 200_000
+max_context_tokens = 1_000_000
 
 # compact 后保留比例（0.0–1.0）
 compact_ratio = 0.7

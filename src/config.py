@@ -14,7 +14,7 @@ class CacheConfig(BaseModel):
 class ContextConfig(BaseModel):
     """上下文窗口与压缩配置。"""
 
-    max_context_tokens: int = 200_000
+    max_context_tokens: int = 1_000_000
     compact_ratio: float = 0.7
 
 
