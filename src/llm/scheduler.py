@@ -185,6 +185,6 @@ class GroupChatScheduler:
         finally:
             if slot:
                 slot.running_task = None
-                if slot.pending_at:
+                if slot.pending_at or slot.msg_count > 0:
                     slot.pending_at = False
                     self._fire(group_id)
