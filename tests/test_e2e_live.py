@@ -63,7 +63,7 @@ async def test_basic_chat(llm: LLMClient, identity: Identity) -> None:
     reply = await llm.chat(
         session_id="test_s1",
         user_id="12345",
-        user_text="你好，请用一句话介绍你自己",
+        user_content="你好，请用一句话介绍你自己",
         identity=identity,
     )
     print(f"[basic_chat] reply: {reply}")
@@ -77,7 +77,7 @@ async def test_tool_call_datetime(llm: LLMClient, identity: Identity) -> None:
     reply = await llm.chat(
         session_id="test_s2",
         user_id="12345",
-        user_text="现在几点了？",
+        user_content="现在几点了？",
         identity=identity,
     )
     print(f"[tool_datetime] reply: {reply}")
@@ -91,7 +91,7 @@ async def test_tool_call_memory(llm: LLMClient, identity: Identity) -> None:
     reply = await llm.chat(
         session_id="test_s3",
         user_id="67890",
-        user_text="我叫小测试，我喜欢写Python",
+        user_content="我叫小测试，我喜欢写Python",
         identity=identity,
         ctx=ctx,
     )
@@ -102,10 +102,10 @@ async def test_tool_call_memory(llm: LLMClient, identity: Identity) -> None:
 
 async def test_multi_turn(llm: LLMClient, identity: Identity) -> None:
     """多轮对话：短期记忆应保留上下文。"""
-    await llm.chat(session_id="test_s4", user_id="11111", user_text="我最喜欢的颜色是蓝色", identity=identity)
+    await llm.chat(session_id="test_s4", user_id="11111", user_content="我最喜欢的颜色是蓝色", identity=identity)
     reply = await llm.chat(
         session_id="test_s4", user_id="11111",
-        user_text="我刚才说我最喜欢什么颜色？", identity=identity,
+        user_content="我刚才说我最喜欢什么颜色？", identity=identity,
     )
     print(f"[multi_turn] reply: {reply}")
     assert reply is not None

@@ -1,6 +1,5 @@
 """Tests for UsageTracker."""
 
-import asyncio
 
 import pytest
 
@@ -78,7 +77,7 @@ async def test_record_failure_does_not_raise(tracker: UsageTracker, tmp_path) ->
     )
 
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 
 async def _insert_sample_data(tracker: UsageTracker) -> None:
@@ -124,7 +123,7 @@ async def test_top_groups(tracker: UsageTracker) -> None:
 
 async def test_summary_month(tracker: UsageTracker) -> None:
     await _insert_sample_data(tracker)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     month_str = now.strftime("%Y-%m")
     summary = await tracker.summary_month(month_str)
     assert summary["total_calls"] == 5

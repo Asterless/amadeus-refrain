@@ -73,7 +73,7 @@ def _content_text(content: Content) -> str:
     """Extract plain text from Content, ignoring image blocks."""
     if isinstance(content, str):
         return content
-    return " ".join(b["text"] for b in content if b.get("type") == "text")
+    return " ".join(b["text"] for b in content if b["type"] == "text")
 
 
 def _resolve_image_refs(

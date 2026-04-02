@@ -3,6 +3,7 @@
 import time
 from datetime import timedelta
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -17,18 +18,18 @@ def cache(tmp_path: Path) -> ImageCache:
 
 def _write_test_image(path: Path) -> None:
     """Write a minimal valid JPEG to disk for testing."""
-    import pyvips
+    import pyvips  # type: ignore[import-untyped]
 
-    img = pyvips.Image.black(100, 80).copy(interpretation="srgb")
+    img: Any = pyvips.Image.black(100, 80).copy(interpretation="srgb")  # pyright: ignore[reportOptionalMemberAccess,reportCallIssue]
     img.jpegsave(str(path), Q=50)
 
 
 class TestSaveAndLoad:
     async def test_save_downloads_and_caches(self, cache: ImageCache, tmp_path: Path) -> None:
         """save() should download image, resize, and store to disk."""
-        import pyvips
+        import pyvips  # type: ignore[import-untyped]
 
-        img = pyvips.Image.black(1024, 768).copy(interpretation="srgb")
+        img: Any = pyvips.Image.black(1024, 768).copy(interpretation="srgb")  # pyright: ignore[reportOptionalMemberAccess,reportCallIssue]
         buf = img.jpegsave_buffer(Q=80)
 
         mock_resp = AsyncMock()
@@ -97,9 +98,9 @@ class TestSaveAndLoad:
 
     async def test_resize_respects_max_dimension(self, cache: ImageCache, tmp_path: Path) -> None:
         """Images larger than max_dimension should be scaled down."""
-        import pyvips
+        import pyvips  # type: ignore[import-untyped]
 
-        img = pyvips.Image.black(2000, 1000).copy(interpretation="srgb")
+        img: Any = pyvips.Image.black(2000, 1000).copy(interpretation="srgb")  # pyright: ignore[reportOptionalMemberAccess,reportCallIssue]
         buf = img.jpegsave_buffer(Q=80)
 
         mock_resp = AsyncMock()
@@ -114,7 +115,7 @@ class TestSaveAndLoad:
         ref = await cache.save(mock_session, url="http://example.com/big.jpg", file_id="bigimg001")
         assert ref is not None
 
-        saved = pyvips.Image.new_from_file(ref["path"])
+        saved: Any = pyvips.Image.new_from_file(ref["path"])
         assert max(saved.width, saved.height) <= 256
 
 

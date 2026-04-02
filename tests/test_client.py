@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 
 from src.identity.models import Identity
-from src.llm.client import LLMClient, _ToolUse, _to_anthropic_message
+from src.llm.client import LLMClient, _to_anthropic_message, _ToolUse
 from src.llm.prompt import PromptBuilder
 from src.llm.usage import UsageTracker
 from src.memory.group_timeline import GroupTimeline
@@ -82,7 +82,10 @@ def _fill_messages(short_term: ShortTermMemory, sid: str, count: int = 8) -> Non
         short_term.add(sid, "user" if i % 2 == 0 else "assistant", f"msg {i}")
 
 
-MOCK_RESULT = {"text": "summary", "tool_uses": [], "input_tokens": 100, "output_tokens": 50, "cache_read": 0, "cache_create": 0}
+MOCK_RESULT = {
+    "text": "summary", "tool_uses": [], "input_tokens": 100,
+    "output_tokens": 50, "cache_read": 0, "cache_create": 0,
+}
 
 MOCK_RESULT_FULL = {
     "text": "reply text",
