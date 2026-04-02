@@ -50,6 +50,7 @@ class UsageTracker:
         self._alert_fn: Callable[[str], Awaitable[None]] | None = None
         self._cache_hit_warn: float = 90.0
         self._slow_threshold_s: float = 60.0
+        self._cold_start: bool = True
 
     async def init(self) -> None:
         self._db = await aiosqlite.connect(self._db_path)
@@ -101,7 +102,11 @@ class UsageTracker:
             return  # slow alert takes priority, skip cache check
 
         # Cache hit check — only for chat/proactive (compact/dream don't use prompt cache)
+        # Skip the first call after restart — cold start always cache-misses.
         if call_type in ("chat", "proactive"):
+            if self._cold_start:
+                self._cold_start = False
+                return
             total = input_tokens + cache_read_tokens + cache_create_tokens
             if total > 0:
                 hit_rate = cache_read_tokens / total * 100

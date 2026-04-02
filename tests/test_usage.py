@@ -145,6 +145,13 @@ async def test_alert_on_slow_call(tracker: UsageTracker) -> None:
 async def test_alert_on_low_cache_hit(tracker: UsageTracker) -> None:
     alert_fn = AsyncMock()
     tracker.set_alert(alert_fn=alert_fn, cache_hit_warn=90.0, slow_threshold_s=999.0)
+    # Consume cold-start (first chat call after restart is silently skipped)
+    await tracker.record(
+        call_type="chat", user_id="1", group_id=None, model="m",
+        input_tokens=100, cache_read_tokens=0, cache_create_tokens=100,
+        output_tokens=10, tool_rounds=0, elapsed_s=1.0,
+    )
+    alert_fn.reset_mock()
     await tracker.record(
         call_type="chat", user_id="1", group_id=None, model="m",
         input_tokens=100, cache_read_tokens=10, cache_create_tokens=0,
@@ -152,6 +159,18 @@ async def test_alert_on_low_cache_hit(tracker: UsageTracker) -> None:
     )
     alert_fn.assert_called_once()
     assert "cache" in alert_fn.call_args[0][0].lower()
+
+
+async def test_no_cache_alert_on_cold_start(tracker: UsageTracker) -> None:
+    """First chat call after restart skips cache-hit alert (cold start)."""
+    alert_fn = AsyncMock()
+    tracker.set_alert(alert_fn=alert_fn, cache_hit_warn=90.0, slow_threshold_s=999.0)
+    await tracker.record(
+        call_type="chat", user_id="1", group_id=None, model="m",
+        input_tokens=100, cache_read_tokens=0, cache_create_tokens=100,
+        output_tokens=50, tool_rounds=0, elapsed_s=1.0,
+    )
+    alert_fn.assert_not_called()
 
 
 async def test_alert_on_error(tracker: UsageTracker) -> None:
