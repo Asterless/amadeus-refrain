@@ -150,11 +150,25 @@ class GroupChatScheduler:
         slot.running_task.add_done_callback(lambda _: None)
 
     async def _send_to_group(self, group_id: str, text: str) -> None:
-        """Send a text message to a group. No-op if bot is not set."""
-        if self._bot:
-            from nonebot.adapters.onebot.v11 import Message
+        """Send a text message to a group with retry on failure."""
+        if not self._bot:
+            return
+        from nonebot.adapters.onebot.v11 import Message
+        from nonebot.adapters.onebot.v11.exception import ActionFailed
 
-            await self._bot.send_group_msg(group_id=int(group_id), message=Message(text))
+        delay = 2.0
+        max_delay = 60.0
+        while True:
+            try:
+                await self._bot.send_group_msg(group_id=int(group_id), message=Message(text))
+                return
+            except ActionFailed as e:
+                logger.warning(
+                    "scheduler | group={} send failed: {} | retry in {}s",
+                    group_id, e.info.get("wording") or e.info.get("message", str(e)), delay,
+                )
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, max_delay)
 
     async def _do_chat(self, group_id: str) -> None:
         slot = self._slots.get(group_id)
