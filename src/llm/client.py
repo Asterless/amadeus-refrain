@@ -238,15 +238,10 @@ class LLMClient:
             })
             messages.append({"role": "assistant", "content": "好的，我已了解之前的对话内容。"})
 
-        # 时间线消息
+        # 时间线消息（不加缓存断点：每次消息列表都变，断点漂移反而打破 cache；
+        # 稳定的缓存断点只放在 system blocks、tools 和上面的摘要上）
         history = self._timeline.to_anthropic_messages(group_id)
         messages.extend(history)
-
-        # 缓存断点：倒数第二条消息
-        if len(messages) >= 2:
-            target = messages[-2]
-            if isinstance(target.get("content"), str):
-                messages[-2] = {"role": target["role"], "content": [_cached_text(target["content"])]}
 
         return messages
 
@@ -312,23 +307,26 @@ class LLMClient:
         tool_defs: list[dict[str, Any]] | None = None
         if not self._tools.empty:
             tool_defs = _to_anthropic_tools(self._tools.to_openai_tools())
-        if allow_skip:
-            tool_defs = [*(tool_defs or []), _PASS_TURN_TOOL]
+        # Always include pass_turn so tool list is stable across @bot / scheduler calls (cache)
+        tool_defs = [*(tool_defs or []), _PASS_TURN_TOOL]
 
         for round_i in range(MAX_TOOL_ROUNDS):
             result = await self._call(system_blocks, messages, tools=tool_defs)
             text: str = result["text"]
             tool_uses: list[_ToolUse] = result["tool_uses"]
 
-            # Check for pass_turn
+            # Check for pass_turn (only honored when allow_skip=True)
             pass_turn = next((tu for tu in tool_uses if tu.name == "pass_turn"), None)
-            if pass_turn:
+            if pass_turn and allow_skip:
                 reason = pass_turn.input.get("reason", "")
                 elapsed = time.monotonic() - t0
                 logger.info("pass_turn | session={} reason={!r} elapsed={:.1f}s", session_id, reason, elapsed)
                 if is_group:
                     self._timeline.set_input_tokens(group_id, result["input_tokens"])
                 return None
+            # Filter out pass_turn so it doesn't enter the tool-execution loop
+            if pass_turn:
+                tool_uses = [tu for tu in tool_uses if tu.name != "pass_turn"]
 
             if not tool_uses:
                 reply = text or "..."

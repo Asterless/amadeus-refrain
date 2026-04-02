@@ -58,6 +58,19 @@ async def test_build_with_group_id(tmp_path: object) -> None:
     assert "群 g1" in blocks[0]["text"]
 
 
+async def test_group_chat_excludes_user_memory(tmp_path: object) -> None:
+    """群聊 system blocks 不含用户记忆（保持前缀稳定以最大化 cache 命中）。"""
+    long_term = LongTermMemory(memory_dir=str(tmp_path))
+    await long_term.update_profile("123", nickname="小明")
+
+    builder = PromptBuilder(long_term=long_term, instruction=_TEST_INSTRUCTION)
+    identity = Identity(id="test", name="测试", personality="人设。")
+    blocks = await builder.build_blocks(identity, user_id="123", group_id="g1")
+
+    assert len(blocks) == 1  # no memory block
+    assert "小明" not in blocks[0]["text"]
+
+
 async def test_build_no_group_context_for_private(tmp_path: object) -> None:
     long_term = LongTermMemory(memory_dir=str(tmp_path))
 

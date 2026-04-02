@@ -54,13 +54,14 @@ class PromptBuilder:
             base_text += "\n\n" + identity.proactive
         blocks.append({"type": "text", "text": base_text, "cache_control": {"type": "ephemeral"}})
 
-        # 层 2：用户记忆（偶尔更新，单独一层以便 cache）
-        memory_ctx = await self._long_term.get_full_context(user_id)
-        if memory_ctx.strip():
-            blocks.append({
-                "type": "text",
-                "text": f"【关于当前用户 {user_id} 的记忆】\n{memory_ctx.strip()}",
-                "cache_control": {"type": "ephemeral"},
-            })
+        # 层 2：用户记忆（仅私聊；群聊跳过以保持 system 前缀稳定，最大化 cache 命中）
+        if not group_id:
+            memory_ctx = await self._long_term.get_full_context(user_id)
+            if memory_ctx.strip():
+                blocks.append({
+                    "type": "text",
+                    "text": f"【关于当前用户 {user_id} 的记忆】\n{memory_ctx.strip()}",
+                    "cache_control": {"type": "ephemeral"},
+                })
 
         return blocks
