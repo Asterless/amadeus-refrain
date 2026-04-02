@@ -11,6 +11,13 @@ class ContextConfig(BaseModel):
     max_context_tokens: int = 1_000_000
 
 
+class UsageConfig(BaseModel):
+    """LLM usage tracking configuration."""
+
+    enabled: bool = True
+    slow_threshold_s: float = 60.0
+
+
 class LLMConfig(BaseModel):
     """LLM 接入配置。"""
 
@@ -19,6 +26,7 @@ class LLMConfig(BaseModel):
     model: str = "claude-sonnet-4-6"
     max_tokens: int = 1024
     context: ContextConfig = ContextConfig()
+    usage: UsageConfig = UsageConfig()
 
 
 class LogConfig(BaseModel):
