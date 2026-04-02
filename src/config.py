@@ -65,6 +65,7 @@ class CompactConfig(BaseModel):
     micro_ratio: float = 0.6
     full_ratio: float = 0.8
     max_failures: int = 3
+    cache_hit_warn: float = 90.0
 
     @model_validator(mode="after")
     def _check_ratios(self) -> Self:
