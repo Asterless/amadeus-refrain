@@ -9,6 +9,7 @@ config.toml
 storage/memories/
 storage/logs/
 storage/*.db
+storage/image_cache/
 !storage/.gitkeep
 !storage/memories/.example.qmd
 napcat/data/
