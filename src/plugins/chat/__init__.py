@@ -1,11 +1,15 @@
 """对话插件：@机器人 触发，Soul + 记忆 + 工具 + 群聊上下文 + 主动插话。"""
 
+from datetime import timedelta
+
+import aiohttp
 from loguru import logger
 from nonebot import get_driver, on_message
 from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, Message, MessageEvent
 from nonebot.rule import to_me
 
 from src.config_loader import load_config
+from src.constants.qq_face import face_to_text
 from src.identity import IdentityManager
 from src.llm.client import LLMClient
 from src.llm.dream import DreamAgent
@@ -14,8 +18,10 @@ from src.llm.scheduler import GroupChatScheduler
 from src.llm.usage import UsageTracker
 from src.memory.group_timeline import GroupTimeline
 from src.memory.history_loader import load_group_history
+from src.memory.image_cache import ImageCache
 from src.memory.memo_store import MemoStore
 from src.memory.short_term import ShortTermMemory
+from src.memory.types import Content, ContentBlock, ImageRefBlock, TextBlock
 from src.tools import ToolRegistry
 from src.tools.context import ToolContext
 from src.tools.datetime_tool import DateTimeTool
@@ -36,16 +42,30 @@ _timeline: GroupTimeline
 _short_term: ShortTermMemory
 _allowed_groups: set[int] = set()
 _allowed_private_users: set[int] = set()
+_image_cache: ImageCache
+_vision_enabled: bool = True
+_max_images_per_message: int = 5
 
 
 @driver.on_startup
 async def _init() -> None:
     global _llm, _dream, _dream_enabled, _scheduler, _identity_mgr, _usage_tracker
     global _timeline, _short_term, _allowed_groups, _allowed_private_users
+    global _image_cache, _vision_enabled, _max_images_per_message
 
     bot_config = load_config()
     _allowed_groups = set(bot_config.group.allowed_groups)
     _allowed_private_users = set(bot_config.allowed_private_users)
+
+    _image_cache = ImageCache(
+        cache_dir=bot_config.vision.cache_dir,
+        max_dimension=bot_config.vision.max_dimension,
+    )
+    _vision_enabled = bot_config.vision.enabled
+    _max_images_per_message = bot_config.vision.max_images_per_message
+
+    # Cleanup stale cache on startup
+    _image_cache.cleanup(max_age=timedelta(hours=bot_config.vision.cache_max_age_hours))
 
     memo_store = MemoStore(
         base_dir=bot_config.memo.dir,
@@ -173,6 +193,7 @@ async def _on_connect(bot: Bot) -> None:
             timeline=_timeline,
             count=bot_config.group.history_load_count,
             bot_self_id=bot.self_id,
+            image_cache=_image_cache if _vision_enabled else None,
         )
     except Exception:
         logger.exception("failed to load group history")
@@ -194,9 +215,18 @@ def _session_id(event: MessageEvent) -> str:
 _REPLY_PREVIEW_MAX = 50
 
 
-def _render_message(msg: Message, reply: object | None = None) -> str:
-    """将消息段转为可读文本，保留 @提及 和引用回复信息。"""
-    parts: list[str] = []
+async def _render_message(
+    msg: Message,
+    reply: object | None = None,
+    session: aiohttp.ClientSession | None = None,
+) -> Content:
+    """将消息段转为文本或内容块列表。
+
+    Returns plain str if no images; list[ContentBlock] if images present.
+    """
+    text_parts: list[str] = []
+    images: list[ImageRefBlock] = []
+    image_count = 0
 
     # 引用回复 → [回复 昵称(QQ号): 原文摘要]
     if reply is not None:
@@ -208,15 +238,49 @@ def _render_message(msg: Message, reply: object | None = None) -> str:
             original = reply_msg.extract_plain_text().strip()
             if len(original) > _REPLY_PREVIEW_MAX:
                 original = original[:_REPLY_PREVIEW_MAX] + "…"
-            parts.append(f"[回复 {nick}({uid}): {original}] ")
+            text_parts.append(f"[回复 {nick}({uid}): {original}] ")
 
     for seg in msg:
         if seg.type == "text":
-            parts.append(seg.data.get("text", ""))
+            text_parts.append(seg.data.get("text", ""))
         elif seg.type == "at":
             qq = seg.data.get("qq", "")
-            parts.append(f"@{qq}")
-    return "".join(parts).strip()
+            text_parts.append(f"@{qq}")
+        elif seg.type == "face":
+            face_id = seg.data.get("id", "")
+            try:
+                text_parts.append(face_to_text(int(face_id)))
+            except (ValueError, TypeError):
+                text_parts.append("[表情]")
+        elif seg.type == "image" and _vision_enabled and session is not None:
+            if image_count >= _max_images_per_message:
+                text_parts.append("[图片]")
+                continue
+            url = seg.data.get("url", "")
+            file_id = seg.data.get("file", "")
+            if url and file_id:
+                file_id = file_id.split(".")[0] if "." in file_id else file_id
+                ref = await _image_cache.save(session, url=url, file_id=file_id)
+                if ref is not None:
+                    images.append(ref)
+                    image_count += 1
+                else:
+                    text_parts.append("[图片]")
+            else:
+                text_parts.append("[图片]")
+        elif seg.type == "image":
+            text_parts.append("[图片]")
+
+    text = "".join(text_parts).strip()
+
+    if not images:
+        return text
+
+    blocks: list[ContentBlock] = []
+    if text:
+        blocks.append(TextBlock(type="text", text=text))
+    blocks.extend(images)
+    return blocks
 
 
 # ── 群聊上下文收集（仅群消息） ──
@@ -231,8 +295,8 @@ async def collect_group_context(bot: Bot, event: GroupMessageEvent) -> None:
     # Skip bot's own messages — already added as role="assistant" by LLMClient
     if str(event.user_id) == bot.self_id:
         return
-    text = _render_message(event.get_message(), reply=event.reply)
-    if not text:
+    content = await _render_message(event.get_message(), reply=event.reply, session=_llm._session)
+    if not content:
         return
 
     nickname = event.sender.nickname or str(event.user_id)
@@ -241,7 +305,7 @@ async def collect_group_context(bot: Bot, event: GroupMessageEvent) -> None:
         group_id,
         role="user",
         speaker=f"{nickname}({event.user_id})",
-        content=text,
+        content=content,
     )
 
     _scheduler.notify(group_id, is_at=event.is_tome())
@@ -265,8 +329,8 @@ async def handle_private_chat(bot: Bot, event: MessageEvent) -> None:
         return
 
     reply_msg = getattr(event, "reply", None)
-    user_text = _render_message(event.get_message(), reply=reply_msg)
-    if not user_text:
+    user_content = await _render_message(event.get_message(), reply=reply_msg, session=_llm._session)
+    if not user_content:
         return
 
     sid = _session_id(event)
@@ -280,7 +344,7 @@ async def handle_private_chat(bot: Bot, event: MessageEvent) -> None:
         reply = await _llm.chat(
             session_id=sid,
             user_id=str(event.user_id),
-            user_text=user_text,
+            user_text=user_content,
             identity=identity,
             group_id=None,
             ctx=ctx,
