@@ -162,7 +162,6 @@ async def _on_connect(bot: Bot) -> None:
         )
 
     try:
-        bot_config = load_config()
         group_list: list[dict[str, object]] = await bot.get_group_list()
         group_ids = [str(g["group_id"]) for g in group_list]
         if _allowed_groups:
