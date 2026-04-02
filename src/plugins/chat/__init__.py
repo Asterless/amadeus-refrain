@@ -75,7 +75,7 @@ async def _init() -> None:
     await _identity_mgr.load_file(f"{soul_dir}/identity.md")
 
     identity = _identity_mgr.resolve()
-    prompt_builder = PromptBuilder(instruction=instruction)
+    prompt_builder = PromptBuilder(instruction=instruction, admins=bot_config.admins)
     prompt_builder.build_static(identity, bot_self_id="")
 
     _dream_enabled = bot_config.dream.enabled

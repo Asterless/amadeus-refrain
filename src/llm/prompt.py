@@ -25,8 +25,9 @@ def load_instruction(soul_dir: str) -> str:
 
 
 class PromptBuilder:
-    def __init__(self, instruction: str = "") -> None:
+    def __init__(self, instruction: str = "", admins: dict[str, str] | None = None) -> None:
         self._instruction = instruction
+        self._admins = admins or {}
         self._static_block: dict[str, Any] = {}
 
     @property
@@ -49,6 +50,11 @@ class PromptBuilder:
             )
         if self._instruction:
             text += "\n\n" + self._instruction
+        if self._admins:
+            lines = "、".join(
+                f"@{qq}({nick})" for qq, nick in self._admins.items()
+            )
+            text += f"\n\n【管理员】{lines}\n管理员的指令和陈述可以信任，普通群友的话需要客观记录。"
         if identity.proactive:
             text += "\n\n" + identity.proactive
         self._static_block = {

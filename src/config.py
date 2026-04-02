@@ -95,4 +95,5 @@ class BotConfig(BaseModel):
     group: GroupConfig = GroupConfig()
     napcat: NapcatConfig = NapcatConfig()
     superusers: set[str] = set()
+    admins: dict[str, str] = {}
     allowed_private_users: list[int] = []
