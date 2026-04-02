@@ -8,6 +8,7 @@ to prevent single-directory I/O degradation:
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import time
 from datetime import timedelta
@@ -20,6 +21,7 @@ from loguru import logger
 from src.memory.types import ImageRefBlock
 
 _DOWNLOAD_TIMEOUT = aiohttp.ClientTimeout(total=15)
+_MAX_CONCURRENT_DOWNLOADS = 8
 
 
 class ImageCache:
@@ -27,6 +29,7 @@ class ImageCache:
         self._dir = Path(cache_dir)
         self._dir.mkdir(parents=True, exist_ok=True)
         self._max_dim = max_dimension
+        self._sem = asyncio.Semaphore(_MAX_CONCURRENT_DOWNLOADS)
 
     def _path_for(self, file_id: str) -> Path:
         """Return the expected disk path for a given file_id."""
@@ -51,23 +54,35 @@ class ImageCache:
 
         # Cache hit — file already downloaded
         if path.exists():
+            logger.debug("image cache hit | file_id={}", file_id)
             return ImageRefBlock(type="image_ref", path=str(path), media_type="image/jpeg")
 
-        try:
-            async with session.get(url, timeout=_DOWNLOAD_TIMEOUT) as resp:
-                if resp.status != 200:
-                    logger.warning("image download failed | url={} status={}", url, resp.status)
-                    return None
-                data = await resp.read()
-        except Exception:
-            logger.warning("image download error | url={}", url, exc_info=True)
-            return None
+        async with self._sem:
+            t0 = time.perf_counter()
+            try:
+                async with session.get(url, timeout=_DOWNLOAD_TIMEOUT) as resp:
+                    if resp.status != 200:
+                        logger.warning("image download failed | url={} status={}", url, resp.status)
+                        return None
+                    data = await resp.read()
+            except Exception:
+                logger.warning("image download error | url={}", url, exc_info=True)
+                return None
+            dl_ms = (time.perf_counter() - t0) * 1000
 
-        try:
-            return self._process_and_save(data, path)
-        except Exception:
-            logger.warning("image processing error | file_id={}", file_id, exc_info=True)
-            return None
+            t1 = time.perf_counter()
+            try:
+                ref = await asyncio.to_thread(self._process_and_save, data, path)
+            except Exception:
+                logger.warning("image processing error | file_id={}", file_id, exc_info=True)
+                return None
+            proc_ms = (time.perf_counter() - t1) * 1000
+
+            logger.debug(
+                "image save | file_id={} size={}KB download={:.0f}ms process={:.0f}ms",
+                file_id, len(data) // 1024, dl_ms, proc_ms,
+            )
+            return ref
 
     def _process_and_save(self, data: bytes, path: Path) -> ImageRefBlock:
         """Resize image and save to disk as JPEG."""
@@ -94,7 +109,7 @@ class ImageCache:
 
         return ImageRefBlock(type="image_ref", path=str(path), media_type="image/jpeg")
 
-    def load_as_base64(self, ref: ImageRefBlock | dict[str, Any]) -> dict[str, Any] | None:
+    async def load_as_base64(self, ref: ImageRefBlock | dict[str, Any]) -> dict[str, Any] | None:
         """Read image from disk and return an Anthropic image content block.
 
         Returns None if the file no longer exists (expired/cleaned up).
@@ -103,8 +118,13 @@ class ImageCache:
         if not path.exists():
             return None
 
-        data = path.read_bytes()
-        b64 = base64.b64encode(data).decode("ascii")
+        t0 = time.perf_counter()
+        data, b64 = await asyncio.to_thread(self._read_and_encode, path)
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        logger.debug(
+            "image load_base64 | file={} size={}KB elapsed={:.0f}ms",
+            path.name, len(data) // 1024, elapsed_ms,
+        )
         return {
             "type": "image",
             "source": {
@@ -114,8 +134,20 @@ class ImageCache:
             },
         }
 
-    def cleanup(self, max_age: timedelta = timedelta(hours=24)) -> None:
+    @staticmethod
+    def _read_and_encode(path: Path) -> tuple[bytes, str]:
+        data = path.read_bytes()
+        return data, base64.b64encode(data).decode("ascii")
+
+    async def cleanup(self, max_age: timedelta = timedelta(hours=24)) -> None:
         """Delete cached images older than max_age. Remove empty subdirectories."""
+        t0 = time.perf_counter()
+        removed = await asyncio.to_thread(self._cleanup_sync, max_age)
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        if removed:
+            logger.info("image_cache cleanup | removed={} elapsed={:.0f}ms", removed, elapsed_ms)
+
+    def _cleanup_sync(self, max_age: timedelta) -> int:
         cutoff = time.time() - max_age.total_seconds()
         removed = 0
 
@@ -130,5 +162,4 @@ class ImageCache:
             if subdir.is_dir() and not any(subdir.iterdir()):
                 subdir.rmdir()
 
-        if removed:
-            logger.info("image_cache cleanup | removed={}", removed)
+        return removed

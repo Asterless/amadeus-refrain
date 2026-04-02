@@ -401,19 +401,19 @@ def test_content_text_empty_list() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_image_refs_none_cache() -> None:
+async def test_resolve_image_refs_none_cache() -> None:
     """With no image_cache, messages pass through unchanged."""
     msgs = [{"role": "user", "content": [
         {"type": "text", "text": "hi"},
         {"type": "image_ref", "path": "x.jpg", "media_type": "image/jpeg"},
     ]}]
-    result = _resolve_image_refs(msgs, None)
+    result = await _resolve_image_refs(msgs, None)
     assert result[0]["content"][1]["type"] == "image_ref"  # unchanged
 
 
-def test_resolve_image_refs_resolves_to_base64() -> None:
+async def test_resolve_image_refs_resolves_to_base64() -> None:
     """image_ref blocks should be converted to base64 image blocks."""
-    mock_cache = Mock()
+    mock_cache = AsyncMock()
     mock_cache.load_as_base64.return_value = {
         "type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "abc123"},
     }
@@ -421,26 +421,26 @@ def test_resolve_image_refs_resolves_to_base64() -> None:
         {"type": "text", "text": "看"},
         {"type": "image_ref", "path": "x.jpg", "media_type": "image/jpeg"},
     ]}]
-    result = _resolve_image_refs(msgs, mock_cache)
+    result = await _resolve_image_refs(msgs, mock_cache)
     assert result[0]["content"][1]["type"] == "image"
     assert result[0]["content"][1]["source"]["data"] == "abc123"
 
 
-def test_resolve_image_refs_expired() -> None:
+async def test_resolve_image_refs_expired() -> None:
     """Expired images (load returns None) become [图片已过期]."""
-    mock_cache = Mock()
+    mock_cache = AsyncMock()
     mock_cache.load_as_base64.return_value = None
     msgs = [{"role": "user", "content": [
         {"type": "image_ref", "path": "gone.jpg", "media_type": "image/jpeg"},
     ]}]
-    result = _resolve_image_refs(msgs, mock_cache)
+    result = await _resolve_image_refs(msgs, mock_cache)
     assert result[0]["content"][0]["type"] == "text"
     assert "过期" in result[0]["content"][0]["text"]
 
 
-def test_resolve_image_refs_preserves_cache_control() -> None:
+async def test_resolve_image_refs_preserves_cache_control() -> None:
     """cache_control on image_ref blocks should transfer to resolved blocks."""
-    mock_cache = Mock()
+    mock_cache = AsyncMock()
     mock_cache.load_as_base64.return_value = {
         "type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "x"},
     }
@@ -448,5 +448,5 @@ def test_resolve_image_refs_preserves_cache_control() -> None:
         {"type": "image_ref", "path": "x.jpg", "media_type": "image/jpeg",
          "cache_control": {"type": "ephemeral"}},
     ]}]
-    result = _resolve_image_refs(msgs, mock_cache)
+    result = await _resolve_image_refs(msgs, mock_cache)
     assert result[0]["content"][0]["cache_control"] == {"type": "ephemeral"}

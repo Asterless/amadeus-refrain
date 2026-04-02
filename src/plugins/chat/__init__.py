@@ -1,5 +1,7 @@
 """对话插件：@机器人 触发，Soul + 记忆 + 工具 + 群聊上下文 + 主动插话。"""
 
+import asyncio
+import time
 from datetime import timedelta
 
 import aiohttp
@@ -65,7 +67,7 @@ async def _init() -> None:
     _max_images_per_message = bot_config.vision.max_images_per_message
 
     # Cleanup stale cache on startup
-    _image_cache.cleanup(max_age=timedelta(hours=bot_config.vision.cache_max_age_hours))
+    await _image_cache.cleanup(max_age=timedelta(hours=bot_config.vision.cache_max_age_hours))
 
     memo_store = MemoStore(
         base_dir=bot_config.memo.dir,
@@ -246,6 +248,8 @@ async def _render_message(
             label = "回复 我" if is_reply_to_bot else f"回复 {nick}({uid})"
             text_parts.append(f"[{label}: {original}] ")
 
+    image_tasks: list[asyncio.Task[ImageRefBlock | None]] = []
+
     for seg in msg:
         if seg.type == "text":
             text_parts.append(seg.data.get("text", ""))
@@ -266,17 +270,30 @@ async def _render_message(
             file_id = seg.data.get("file", "")
             if url and file_id:
                 file_id = file_id.split(".")[0] if "." in file_id else file_id
-                ref = await _image_cache.save(session, url=url, file_id=file_id)
-                if ref is not None:
-                    images.append(ref)
-                    image_count += 1
-                else:
-                    text_parts.append("[图片]")
+                image_tasks.append(
+                    asyncio.ensure_future(_image_cache.save(session, url=url, file_id=file_id))
+                )
+                image_count += 1
             else:
                 text_parts.append("[图片]")
         elif seg.type == "image":
             summary = seg.data.get("summary", "").strip("[]") or "图片"
             text_parts.append(f"[{summary}]")
+
+    # Resolve all image downloads concurrently
+    if image_tasks:
+        t0 = time.perf_counter()
+        results = await asyncio.gather(*image_tasks, return_exceptions=True)
+        for r in results:
+            if isinstance(r, BaseException) or r is None:
+                text_parts.append("[图片]")
+            else:
+                images.append(r)
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        logger.debug(
+            "render_message images | tasks={} ok={} elapsed={:.0f}ms",
+            len(image_tasks), len(images), elapsed_ms,
+        )
 
     text = "".join(text_parts).strip()
 

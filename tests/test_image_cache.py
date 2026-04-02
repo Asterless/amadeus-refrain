@@ -84,14 +84,14 @@ class TestSaveAndLoad:
         assert ref is not None
         mock_session.get.assert_not_called()
 
-    def test_load_as_base64(self, cache: ImageCache, tmp_path: Path) -> None:
+    async def test_load_as_base64(self, cache: ImageCache, tmp_path: Path) -> None:
         subdir = tmp_path / "ab"
         subdir.mkdir()
         img_path = subdir / "abc123.jpg"
         _write_test_image(img_path)
 
         ref = {"type": "image_ref", "path": str(img_path), "media_type": "image/jpeg"}
-        block = cache.load_as_base64(ref)
+        block = await cache.load_as_base64(ref)
 
         assert block is not None
         assert block["type"] == "image"
@@ -99,9 +99,9 @@ class TestSaveAndLoad:
         assert block["source"]["media_type"] == "image/jpeg"
         assert len(block["source"]["data"]) > 0
 
-    def test_load_as_base64_missing_file(self, cache: ImageCache) -> None:
+    async def test_load_as_base64_missing_file(self, cache: ImageCache) -> None:
         ref = {"type": "image_ref", "path": "/nonexistent/file.jpg", "media_type": "image/jpeg"}
-        block = cache.load_as_base64(ref)
+        block = await cache.load_as_base64(ref)
         assert block is None
 
     async def test_resize_respects_max_dimension(self, cache: ImageCache, tmp_path: Path) -> None:
@@ -125,7 +125,7 @@ class TestSaveAndLoad:
 
 
 class TestCleanup:
-    def test_cleanup_removes_old_files(self, cache: ImageCache, tmp_path: Path) -> None:
+    async def test_cleanup_removes_old_files(self, cache: ImageCache, tmp_path: Path) -> None:
         subdir = tmp_path / "ab"
         subdir.mkdir()
 
@@ -139,12 +139,12 @@ class TestCleanup:
 
         os.utime(old_file, (old_mtime, old_mtime))
 
-        cache.cleanup(max_age=timedelta(hours=24))
+        await cache.cleanup(max_age=timedelta(hours=24))
 
         assert not old_file.exists()
         assert new_file.exists()
 
-    def test_cleanup_removes_empty_subdirs(self, cache: ImageCache, tmp_path: Path) -> None:
+    async def test_cleanup_removes_empty_subdirs(self, cache: ImageCache, tmp_path: Path) -> None:
         subdir = tmp_path / "cd"
         subdir.mkdir()
         old_file = subdir / "only.jpg"
@@ -155,7 +155,7 @@ class TestCleanup:
 
         os.utime(old_file, (old_mtime, old_mtime))
 
-        cache.cleanup(max_age=timedelta(hours=24))
+        await cache.cleanup(max_age=timedelta(hours=24))
 
         assert not old_file.exists()
         assert not subdir.exists()

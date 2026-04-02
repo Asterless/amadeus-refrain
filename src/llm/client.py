@@ -76,7 +76,7 @@ def _content_text(content: Content) -> str:
     return " ".join(b["text"] for b in content if b["type"] == "text")
 
 
-def _resolve_image_refs(
+async def _resolve_image_refs(
     messages: list[dict[str, Any]],
     image_cache: ImageCache | None,
 ) -> list[dict[str, Any]]:
@@ -84,27 +84,50 @@ def _resolve_image_refs(
     if image_cache is None:
         return messages
 
+    t0 = time.perf_counter()
+    resolved_count = 0
+
     for msg in messages:
         content = msg.get("content")
         if not isinstance(content, list):
             continue
+
+        # Collect async resolve tasks with their indices
+        tasks: list[tuple[int, dict[str, Any], asyncio.Task[dict[str, Any] | None]]] = []
+        for i, block in enumerate(content):
+            if isinstance(block, dict) and block.get("type") == "image_ref":
+                task = asyncio.ensure_future(image_cache.load_as_base64(block))
+                tasks.append((i, block, task))
+
+        if not tasks:
+            continue
+
+        await asyncio.gather(*(t for _, _, t in tasks))
+
         new_content: list[dict[str, Any]] = []
-        for block in content:
-            if not isinstance(block, dict) or block.get("type") != "image_ref":
+        task_map = {i: (block, task) for i, block, task in tasks}
+        for i, block in enumerate(content):
+            if i not in task_map:
                 new_content.append(block)
                 continue
-            cache_ctrl = block.get("cache_control")
-            resolved = image_cache.load_as_base64(block)
+            orig_block, task = task_map[i]
+            cache_ctrl = orig_block.get("cache_control")
+            resolved = task.result()
             if resolved is not None:
                 if cache_ctrl:
                     resolved = {**resolved, "cache_control": cache_ctrl}
                 new_content.append(resolved)
+                resolved_count += 1
             else:
                 fallback: dict[str, Any] = {"type": "text", "text": "[图片已过期]"}
                 if cache_ctrl:
                     fallback["cache_control"] = cache_ctrl
                 new_content.append(fallback)
         msg["content"] = new_content
+
+    if resolved_count:
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        logger.debug("resolve_image_refs | images={} elapsed={:.0f}ms", resolved_count, elapsed_ms)
 
     return messages
 
@@ -439,7 +462,7 @@ class LLMClient:
         else:
             system_blocks = [self._prompt.static_block]
 
-        messages = _resolve_image_refs(messages, self._image_cache)
+        messages = await _resolve_image_refs(messages, self._image_cache)
 
         tool_defs: list[dict[str, Any]] | None = None
         if not self._tools.empty:

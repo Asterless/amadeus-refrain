@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
 from typing import Any
 
 import aiohttp
@@ -53,6 +55,7 @@ async def _load_one_group(
     if not messages:
         return
 
+    t0 = time.perf_counter()
     loaded = 0
 
     for msg in messages:
@@ -70,7 +73,8 @@ async def _load_one_group(
             timeline.add(group_id, role="user", speaker=f"{nickname}({user_id})", content=content)
         loaded += 1
 
-    logger.info("history loaded | group={} messages={}", group_id, loaded)
+    elapsed_ms = (time.perf_counter() - t0) * 1000
+    logger.info("history loaded | group={} messages={} elapsed={:.0f}ms", group_id, loaded, elapsed_ms)
 
 
 async def _extract_content(
@@ -80,7 +84,8 @@ async def _extract_content(
 ) -> Content:
     """Extract text, face, and image segments into a Content value."""
     text_parts: list[str] = []
-    images: list[ImageRefBlock] = []
+    # Collect image download coroutines for concurrent execution
+    image_tasks: list[asyncio.Task[ImageRefBlock | None]] = []
 
     for seg in segments:
         seg_type = seg.get("type", "")
@@ -99,15 +104,29 @@ async def _extract_content(
             file_id = seg_data.get("file", "")
             if url and file_id:
                 file_id = file_id.split(".")[0] if "." in file_id else file_id
-                ref = await image_cache.save(session, url=url, file_id=file_id)
-                if ref is not None:
-                    images.append(ref)
-                else:
-                    text_parts.append("[图片]")
+                image_tasks.append(
+                    asyncio.ensure_future(image_cache.save(session, url=url, file_id=file_id))
+                )
             else:
                 text_parts.append("[图片]")
         elif seg_type == "image":
             text_parts.append("[图片]")
+
+    # Resolve all image downloads concurrently
+    images: list[ImageRefBlock] = []
+    if image_tasks:
+        t0 = time.perf_counter()
+        results = await asyncio.gather(*image_tasks, return_exceptions=True)
+        for r in results:
+            if isinstance(r, BaseException) or r is None:
+                text_parts.append("[图片]")
+            else:
+                images.append(r)
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        logger.debug(
+            "history image batch | tasks={} ok={} elapsed={:.0f}ms",
+            len(image_tasks), len(images), elapsed_ms,
+        )
 
     text = "".join(text_parts).strip()
 
