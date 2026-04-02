@@ -144,3 +144,10 @@ class GroupTimeline:
         state.last_input_tokens = 0
         state.last_cached_msg_index = 0
 
+    def drop_oldest(self, group_id: str, count: int) -> None:
+        """Drop the oldest `count` messages. For micro compact."""
+        state = self._store.get(group_id)
+        if state is None:
+            return
+        state.messages = state.messages[count:]
+

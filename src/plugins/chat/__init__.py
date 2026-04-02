@@ -8,23 +8,26 @@ from nonebot.rule import to_me
 from src.config_loader import load_config
 from src.identity import IdentityManager
 from src.llm.client import LLMClient
+from src.llm.dream import DreamAgent
 from src.llm.prompt import PromptBuilder, load_instruction
 from src.llm.scheduler import GroupChatScheduler
 from src.memory.group_timeline import GroupTimeline
 from src.memory.history_loader import load_group_history
-from src.memory.long_term import LongTermMemory
+from src.memory.memo_store import MemoStore
 from src.memory.short_term import ShortTermMemory
 from src.tools import ToolRegistry
 from src.tools.context import ToolContext
 from src.tools.datetime_tool import DateTimeTool
 from src.tools.group_admin import MuteUserTool, SendGroupMsgTool, SetTitleTool
 from src.tools.http_api import HttpApiTool
-from src.tools.memory_tool import RecallMemoryTool, SaveMemoryTool
+from src.tools.memo_tools import RecallMemoTool, UpdateMemoTool
 from src.tools.web_fetch import WebFetchTool
 
 driver = get_driver()
 
 _llm: LLMClient
+_dream: DreamAgent
+_dream_enabled: bool = False
 _scheduler: GroupChatScheduler
 _identity_mgr: IdentityManager
 _timeline: GroupTimeline
@@ -35,24 +38,31 @@ _allowed_private_users: set[int] = set()
 
 @driver.on_startup
 async def _init() -> None:
-    global _llm, _scheduler, _identity_mgr, _timeline, _short_term, _allowed_groups, _allowed_private_users
+    global _llm, _dream, _dream_enabled, _scheduler, _identity_mgr
+    global _timeline, _short_term, _allowed_groups, _allowed_private_users
 
     bot_config = load_config()
     _allowed_groups = set(bot_config.group.allowed_groups)
     _allowed_private_users = set(bot_config.allowed_private_users)
 
-    long_term = LongTermMemory(memory_dir=bot_config.memory.dir)
+    memo_store = MemoStore(
+        base_dir=bot_config.memo.dir,
+        history_enabled=bot_config.memo.history_enabled,
+        user_max_chars=bot_config.memo.user_max_chars,
+        group_max_chars=bot_config.memo.group_max_chars,
+        index_max_lines=bot_config.memo.index_max_lines,
+    )
+    await memo_store.startup()
     _short_term = ShortTermMemory()
     _timeline = GroupTimeline(max_messages=bot_config.group.max_timeline_messages)
     instruction = load_instruction(bot_config.soul.dir)
-    prompt_builder = PromptBuilder(long_term=long_term, instruction=instruction)
     short_term = _short_term
 
     superusers = bot_config.superusers | driver.config.superusers
 
     tools = ToolRegistry()
-    tools.register(SaveMemoryTool(long_term))
-    tools.register(RecallMemoryTool(long_term))
+    tools.register(RecallMemoTool(memo_store))
+    tools.register(UpdateMemoTool(memo_store))
     tools.register(DateTimeTool())
     tools.register(WebFetchTool())
     tools.register(HttpApiTool())
@@ -64,6 +74,20 @@ async def _init() -> None:
     soul_dir = bot_config.soul.dir
     await _identity_mgr.load_file(f"{soul_dir}/identity.md")
 
+    identity = _identity_mgr.resolve()
+    prompt_builder = PromptBuilder(instruction=instruction)
+    prompt_builder.build_static(identity, bot_self_id="")
+
+    _dream_enabled = bot_config.dream.enabled
+    _dream = DreamAgent(
+        store=memo_store,
+        interval_hours=bot_config.dream.interval_hours,
+        min_compacts=bot_config.dream.min_compacts,
+        max_rounds=bot_config.dream.max_rounds,
+        user_max_chars=bot_config.memo.user_max_chars,
+        group_max_chars=bot_config.memo.group_max_chars,
+    )
+
     _llm = LLMClient(
         base_url=bot_config.llm.base_url,
         api_key=bot_config.llm.api_key,
@@ -72,9 +96,12 @@ async def _init() -> None:
         short_term=short_term,
         tools=tools,
         max_context_tokens=bot_config.llm.context.max_context_tokens,
-        compact_ratio=bot_config.llm.context.compact_ratio,
+        micro_ratio=bot_config.compact.micro_ratio,
+        full_ratio=bot_config.compact.full_ratio,
+        max_compact_failures=bot_config.compact.max_failures,
         group_timeline=_timeline,
-        long_term=long_term,
+        memo_store=memo_store,
+        on_compact=lambda: _dream.notify_compact(),
     )
 
     _scheduler = GroupChatScheduler(
@@ -96,6 +123,8 @@ async def _shutdown() -> None:
 async def _on_connect(bot: Bot) -> None:
     """Bot 连接后拉取群历史消息，填充群聊上下文。"""
     _llm._bot_self_id = bot.self_id
+    # Rebuild static block now that we have the real bot_self_id
+    _llm._prompt.build_static(_identity_mgr.resolve(), bot_self_id=bot.self_id)
     _scheduler.set_bot(bot)
     try:
         bot_config = load_config()
@@ -192,6 +221,11 @@ async def collect_group_context(bot: Bot, event: GroupMessageEvent) -> None:
 chat = on_message(rule=to_me(), priority=10, block=True)
 
 
+async def _dream_llm_call(system_prompt: str) -> None:
+    """Placeholder Dream LLM call — will be fleshed out when Dream is fully integrated."""
+    logger.warning("dream LLM call is a STUB — dream consolidation is NOT running (prompt len={})", len(system_prompt))
+
+
 @chat.handle()
 async def handle_chat(bot: Bot, event: MessageEvent) -> None:
     # 白名单过滤
@@ -214,7 +248,7 @@ async def handle_chat(bot: Bot, event: MessageEvent) -> None:
     if group_id:
         _scheduler.interrupt(group_id)
 
-    ctx = ToolContext(bot=bot, user_id=str(event.user_id), group_id=group_id)
+    ctx = ToolContext(bot=bot, user_id=str(event.user_id), group_id=group_id, session_id=sid)
 
     async def send_segment(text: str) -> None:
         await bot.send(event, Message(text))
@@ -235,6 +269,10 @@ async def handle_chat(bot: Bot, event: MessageEvent) -> None:
     finally:
         if group_id:
             _scheduler.release(group_id)
+
+    # Check if Dream should run (fire-and-forget, gated by config)
+    if _dream_enabled:
+        await _dream.maybe_run(_dream_llm_call)
 
     if reply:
         await chat.finish(Message(reply))

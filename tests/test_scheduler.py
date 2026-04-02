@@ -2,8 +2,6 @@
 
 import asyncio
 
-import pytest
-
 from src.identity.models import Identity
 from src.llm.scheduler import GroupChatScheduler
 from src.memory.group_timeline import GroupTimeline
@@ -83,7 +81,6 @@ class TestNotify:
         await asyncio.sleep(0.15)  # debounce fires, running_task starts
         assert len(llm.calls) == 1
         scheduler.notify("g1")  # while running_task is active (or just finished)
-        slot = scheduler._slots["g1"]
         # msg_count incremented but no new debounce if running_task is still set
         # (depends on timing, so just verify no crash)
         await scheduler.close()

@@ -60,6 +60,13 @@ class ShortTermMemory:
     def needs_compact(self, session_id: str, max_tokens: int, ratio: float) -> bool:
         return self.get_input_tokens(session_id) > max_tokens * ratio
 
+    def drop_oldest(self, session_id: str, count: int) -> None:
+        """Drop the oldest `count` messages. For micro compact."""
+        state = self._store.get(session_id)
+        if state is None:
+            return
+        state.messages = state.messages[count:]
+
     def compact(self, session_id: str, split: int, new_summary: str) -> None:
         if session_id not in self._store:
             return

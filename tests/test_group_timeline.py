@@ -148,3 +148,18 @@ def test_cached_msg_index_reset_on_compact(group_timeline: GroupTimeline) -> Non
     group_timeline.set_cached_msg_index("g1", 3)
     group_timeline.compact("g1", split=2, new_summary="摘要")
     assert group_timeline.get_cached_msg_index("g1") == 0
+
+
+# ---------------------------------------------------------------------------
+# test_drop_oldest
+# ---------------------------------------------------------------------------
+
+
+def test_drop_oldest(group_timeline: GroupTimeline) -> None:
+    for i in range(10):
+        group_timeline.add("g1", role="user", speaker=f"u{i}", content=f"msg{i}")
+    assert len(group_timeline.get_messages("g1")) == 10
+    group_timeline.drop_oldest("g1", 3)
+    messages = group_timeline.get_messages("g1")
+    assert len(messages) == 7
+    assert messages[0]["content"] == "msg3"

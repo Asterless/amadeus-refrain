@@ -11,12 +11,12 @@ import pytest
 from src.identity.models import Identity
 from src.llm.client import LLMClient
 from src.llm.prompt import PromptBuilder
-from src.memory.long_term import LongTermMemory
+from src.memory.memo_store import MemoStore
 from src.memory.short_term import ShortTermMemory
 from src.tools import ToolRegistry
 from src.tools.context import ToolContext
 from src.tools.datetime_tool import DateTimeTool
-from src.tools.memory_tool import RecallMemoryTool, SaveMemoryTool
+from src.tools.memo_tools import RecallMemoTool, UpdateMemoTool
 
 LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "http://127.0.0.1:34567")
 LLM_API_KEY = os.environ.get("LLM_API_KEY", "sk-placeholder")
@@ -30,13 +30,16 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture
 async def llm(tmp_path: object) -> LLMClient:
-    long_term = LongTermMemory(memory_dir=str(tmp_path))
+    memo_store = MemoStore(base_dir=str(tmp_path))
+    await memo_store.startup()
     short_term = ShortTermMemory()
-    prompt_builder = PromptBuilder(long_term=long_term)
+    identity = Identity(id="test", name="测试", personality="你是一个QQ群聊机器人，回复简洁。")
+    prompt_builder = PromptBuilder()
+    prompt_builder.build_static(identity, bot_self_id="")
 
     tools = ToolRegistry()
-    tools.register(SaveMemoryTool(long_term))
-    tools.register(RecallMemoryTool(long_term))
+    tools.register(RecallMemoTool(memo_store))
+    tools.register(UpdateMemoTool(memo_store))
     tools.register(DateTimeTool())
 
     return LLMClient(
@@ -46,6 +49,7 @@ async def llm(tmp_path: object) -> LLMClient:
         prompt_builder=prompt_builder,
         short_term=short_term,
         tools=tools,
+        memo_store=memo_store,
     )
 
 
@@ -99,7 +103,10 @@ async def test_tool_call_memory(llm: LLMClient, identity: Identity) -> None:
 async def test_multi_turn(llm: LLMClient, identity: Identity) -> None:
     """多轮对话：短期记忆应保留上下文。"""
     await llm.chat(session_id="test_s4", user_id="11111", user_text="我最喜欢的颜色是蓝色", identity=identity)
-    reply = await llm.chat(session_id="test_s4", user_id="11111", user_text="我刚才说我最喜欢什么颜色？", identity=identity)
+    reply = await llm.chat(
+        session_id="test_s4", user_id="11111",
+        user_text="我刚才说我最喜欢什么颜色？", identity=identity,
+    )
     print(f"[multi_turn] reply: {reply}")
     assert reply is not None
     assert "蓝" in reply

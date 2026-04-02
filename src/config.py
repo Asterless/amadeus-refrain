@@ -1,13 +1,14 @@
 """Bot 配置：嵌套 Pydantic 模型，支持 TOML / 环境变量 / CLI 覆盖。"""
 
-from pydantic import BaseModel
+from typing import Self
+
+from pydantic import BaseModel, model_validator
 
 
 class ContextConfig(BaseModel):
-    """上下文窗口与压缩配置。"""
+    """上下文窗口配置。"""
 
     max_context_tokens: int = 1_000_000
-    compact_ratio: float = 0.7
 
 
 class LLMConfig(BaseModel):
@@ -24,12 +25,6 @@ class LogConfig(BaseModel):
     """日志配置。"""
 
     dir: str = "storage/logs"
-
-
-class MemoryConfig(BaseModel):
-    """长期记忆存储配置。"""
-
-    dir: str = "storage/memories"
 
 
 class SoulConfig(BaseModel):
@@ -54,12 +49,47 @@ class NapcatConfig(BaseModel):
     api_url: str = "http://localhost:29300"
 
 
+class MemoConfig(BaseModel):
+    """备忘录系统配置。"""
+
+    dir: str = "storage/memories"
+    user_max_chars: int = 300
+    group_max_chars: int = 500
+    index_max_lines: int = 200
+    history_enabled: bool = True
+
+
+class CompactConfig(BaseModel):
+    """上下文压缩配置。"""
+
+    micro_ratio: float = 0.6
+    full_ratio: float = 0.8
+    max_failures: int = 3
+
+    @model_validator(mode="after")
+    def _check_ratios(self) -> Self:
+        if self.micro_ratio >= self.full_ratio:
+            raise ValueError("micro_ratio must be less than full_ratio")
+        return self
+
+
+class DreamConfig(BaseModel):
+    """Dream 整理配置。"""
+
+    enabled: bool = False
+    interval_hours: int = 24
+    min_compacts: int = 5
+    max_rounds: int = 15
+
+
 class BotConfig(BaseModel):
     """全局 Bot 配置。"""
 
     llm: LLMConfig = LLMConfig()
     log: LogConfig = LogConfig()
-    memory: MemoryConfig = MemoryConfig()
+    memo: MemoConfig = MemoConfig()
+    compact: CompactConfig = CompactConfig()
+    dream: DreamConfig = DreamConfig()
     soul: SoulConfig = SoulConfig()
     group: GroupConfig = GroupConfig()
     napcat: NapcatConfig = NapcatConfig()

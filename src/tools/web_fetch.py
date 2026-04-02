@@ -48,9 +48,7 @@ def _is_allowed_addr(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> boo
     """判断地址是否允许访问：全局地址或代理 DNS 段。"""
     if addr.is_global:
         return True
-    if isinstance(addr, ipaddress.IPv4Address) and addr in _PROXY_DNS_NET:
-        return True
-    return False
+    return isinstance(addr, ipaddress.IPv4Address) and addr in _PROXY_DNS_NET
 
 
 class WebFetchTool(Tool):

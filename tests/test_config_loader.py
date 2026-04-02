@@ -35,9 +35,9 @@ def test_load_defaults_without_file(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert cfg.llm.model == "claude-sonnet-4-6"
     assert cfg.llm.max_tokens == 1024
     assert cfg.llm.context.max_context_tokens == 1_000_000
-    assert cfg.llm.context.compact_ratio == 0.7
+    assert cfg.compact.micro_ratio == 0.6
+    assert cfg.compact.full_ratio == 0.8
     assert cfg.log.dir == "storage/logs"
-    assert cfg.memory.dir == "storage/memories"
     assert cfg.soul.dir == "soul"
     assert cfg.group.max_timeline_messages == 200
     assert cfg.group.history_load_count == 30
@@ -69,10 +69,10 @@ max_tokens = 2048
 
 [llm.context]
 max_context_tokens = 100_000
-compact_ratio = 0.5
 
-[memory]
-dir = "custom/memories"
+[compact]
+micro_ratio = 0.5
+full_ratio = 0.7
 
 [soul]
 dir = "custom_soul"
@@ -95,8 +95,8 @@ api_url = "http://napcat:29300"
     assert cfg.llm.model == "claude-opus-4"
     assert cfg.llm.max_tokens == 2048
     assert cfg.llm.context.max_context_tokens == 100_000
-    assert cfg.llm.context.compact_ratio == 0.5
-    assert cfg.memory.dir == "custom/memories"
+    assert cfg.compact.micro_ratio == 0.5
+    assert cfg.compact.full_ratio == 0.7
     assert cfg.soul.dir == "custom_soul"
     assert cfg.group.max_timeline_messages == 100
     assert cfg.group.history_load_count == 50
@@ -192,5 +192,26 @@ model = "auto-detected-model"
     cfg = load_config(config_path=None)
 
     assert cfg.llm.model == "auto-detected-model"
+
+
+def test_memo_config_defaults() -> None:
+    from src.config import CompactConfig, DreamConfig, MemoConfig
+    m = MemoConfig()
+    assert m.dir == "storage/memories"
+    assert m.user_max_chars == 300
+    assert m.group_max_chars == 500
+    assert m.index_max_lines == 200
+    assert m.history_enabled is True
+
+    c = CompactConfig()
+    assert c.micro_ratio == 0.6
+    assert c.full_ratio == 0.8
+    assert c.max_failures == 3
+
+    d = DreamConfig()
+    assert d.enabled is False
+    assert d.interval_hours == 24
+    assert d.min_compacts == 5
+    assert d.max_rounds == 15
 
 

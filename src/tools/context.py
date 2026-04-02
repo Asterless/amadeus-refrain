@@ -11,4 +11,5 @@ class ToolContext:
     bot: Any = None  # nonebot.adapters.onebot.v11.Bot（避免顶层导入耦合）
     user_id: str = ""
     group_id: str | None = None
+    session_id: str = ""
     extra: dict[str, Any] = field(default_factory=dict)

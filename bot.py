@@ -42,8 +42,8 @@ logger.info(
     _c.llm.model, _c.llm.base_url, _c.llm.max_tokens,
 )
 logger.info(
-    "[Context] max_tokens={} compact_ratio={}",
-    _c.llm.context.max_context_tokens, _c.llm.context.compact_ratio,
+    "[Context] max_tokens={} micro_ratio={} full_ratio={}",
+    _c.llm.context.max_context_tokens, _c.compact.micro_ratio, _c.compact.full_ratio,
 )
 logger.info(
     "[Group] debounce={:.1f}s batch_size={}",
@@ -59,8 +59,8 @@ logger.info(
     _c.superusers or "无", _c.allowed_private_users or "无限制",
 )
 logger.info(
-    "[Dirs] soul={} memory={} log={}",
-    _c.soul.dir, _c.memory.dir, _c.log.dir,
+    "[Dirs] soul={} memo={} log={}",
+    _c.soul.dir, _c.memo.dir, _c.log.dir,
 )
 logger.info("[NapCat] api_url={}", _c.napcat.api_url)
 logger.info("==================================")

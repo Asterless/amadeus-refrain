@@ -1,9 +1,10 @@
-"""LLM 客户端封装：拼装消息列表，调用 Anthropic API，处理工具调用。"""
+"""LLM client: assemble message lists, call Anthropic API, handle tool loops."""
 
 from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -14,24 +15,24 @@ from loguru import logger
 from src.identity.models import Identity
 from src.llm.prompt import PromptBuilder
 from src.memory.group_timeline import GroupTimeline
-from src.memory.long_term import LongTermMemory
+from src.memory.memo_store import MemoStore
 from src.memory.short_term import ChatMessage, ShortTermMemory
 from src.tools.context import ToolContext
 from src.tools.registry import ToolRegistry
 
 MAX_TOOL_ROUNDS = 5
 _SEGMENT_SEP = "---"
-_SEGMENT_DELAY = 0.5  # 分段发送间隔（秒）
-_BLANK_LINE_RE = __import__("re").compile(r"\n{2,}")
+_SEGMENT_DELAY = 0.5  # seconds between segment sends
+_BLANK_LINE_RE = re.compile(r"\n{2,}")
 
 
 def _clean_text(text: str) -> str:
-    """压缩连续空行为单个换行。"""
+    """Collapse consecutive blank lines into a single newline."""
     return _BLANK_LINE_RE.sub("\n", text).strip()
 
 
 def _split_segments(text: str) -> list[str]:
-    """按 --- 分隔符拆分回复为多条消息，并清理空行。"""
+    """Split reply into multiple messages by --- separator, cleaning blank lines."""
     segments: list[str] = []
     current: list[str] = []
     for line in text.split("\n"):
@@ -102,7 +103,7 @@ async def _call_api(
     max_tokens: int = 1024,
     tools: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """直接调用 Anthropic API，解析 SSE 流。"""
+    """Call Anthropic API, parse SSE stream."""
     body: dict[str, Any] = {
         "model": model,
         "system": system_blocks,
@@ -111,7 +112,7 @@ async def _call_api(
         "stream": True,
     }
     if tools:
-        # 工具定义最后一个加 cache_control，整组工具一起缓存
+        # Cache-control on last tool def so the whole tool set is cached together
         cached_tools = [*tools]
         cached_tools[-1] = {**cached_tools[-1], "cache_control": {"type": "ephemeral"}}
         body["tools"] = cached_tools
@@ -156,8 +157,12 @@ async def _call_api(
                     )
                     tool_uses.append(_ToolUse(id=current_tool["id"], name=current_tool["name"], input=input_data))
                     current_tool = {}
+            elif event_type == "error":
+                error_data = data.get("error", {})
+                error_msg = error_data.get("message", str(data))
+                raise RuntimeError(f"Anthropic API stream error: {error_msg}")
 
-    # 记录 cache 命中情况
+    # Log cache hit stats
     cache_read = usage.get("cache_read_input_tokens", 0)
     cache_create = usage.get("cache_creation_input_tokens", 0)
     input_tokens = usage.get("input_tokens", 0)
@@ -183,10 +188,13 @@ class LLMClient:
         short_term: ShortTermMemory,
         tools: ToolRegistry,
         max_context_tokens: int = 200_000,
-        compact_ratio: float = 0.7,
+        micro_ratio: float = 0.6,
+        full_ratio: float = 0.8,
+        max_compact_failures: int = 3,
         group_timeline: GroupTimeline | None = None,
-        long_term: LongTermMemory | None = None,
+        memo_store: MemoStore | None = None,
         bot_self_id: str = "",
+        on_compact: Callable[[], None] | None = None,
     ) -> None:
         connector = aiohttp.TCPConnector(
             enable_cleanup_closed=True,
@@ -203,10 +211,15 @@ class LLMClient:
         self._short_term = short_term
         self._tools = tools
         self._max_context_tokens = max_context_tokens
-        self._compact_ratio = compact_ratio
+        self._micro_ratio = micro_ratio
+        self._full_ratio = full_ratio
+        self._max_compact_failures = max_compact_failures
+        self._private_compact_failures: int = 0
+        self._group_compact_failures: int = 0
         self._timeline = group_timeline
-        self._long_term = long_term
+        self._memo_store = memo_store
         self._bot_self_id = bot_self_id
+        self._on_compact = on_compact
 
     async def close(self) -> None:
         await self._session.close()
@@ -221,15 +234,15 @@ class LLMClient:
         )
 
     # ------------------------------------------------------------------
-    # 消息构建
+    # Message building
     # ------------------------------------------------------------------
 
     def _build_group_messages(self, group_id: str) -> list[dict[str, Any]]:
-        """为群聊构建 messages 列表：可选摘要 + 时间线消息 + 缓存断点。"""
+        """Build message list for group chat: optional summary + timeline + cache breakpoint."""
         assert self._timeline is not None
         messages: list[dict[str, Any]] = []
 
-        # 摘要 → 稳定前缀
+        # Summary as stable prefix for cache hits
         summary = self._timeline.get_summary(group_id)
         if summary:
             messages.append({
@@ -238,28 +251,28 @@ class LLMClient:
             })
             messages.append({"role": "assistant", "content": "好的，我已了解之前的对话内容。"})
 
-        # 时间线消息
+        # Timeline messages
         history = self._timeline.to_anthropic_messages(group_id)
         messages.extend(history)
 
-        # 在上次 API 调用时记录的位置放 cache 断点：该位置之前的消息不变，前缀匹配 → cache hit
+        # Place cache breakpoint at the position recorded by the previous API call
         cached_idx = self._timeline.get_cached_msg_index(group_id)
         if 0 < cached_idx < len(messages):
             target = messages[cached_idx]
             if isinstance(target.get("content"), str):
                 messages[cached_idx] = {"role": target["role"], "content": [_cached_text(target["content"])]}
 
-        # 存 second-to-last 供下次用（last 可能被新 user 消息合并，second-to-last 必定稳定）
+        # Store second-to-last for next call (last may be merged with new user msg)
         if len(messages) >= 2:
             self._timeline.set_cached_msg_index(group_id, len(messages) - 2)
 
         return messages
 
     def _build_private_messages(self, session_id: str) -> list[dict[str, Any]]:
-        """为私聊构建 messages 列表：可选摘要 + 对话历史 + 缓存断点。"""
+        """Build message list for private chat: optional summary + history + cache breakpoint."""
         messages: list[dict[str, Any]] = []
 
-        # 摘要 → 稳定前缀
+        # Summary as stable prefix
         summary = self._short_term.get_summary(session_id)
         if summary:
             messages.append({
@@ -268,7 +281,7 @@ class LLMClient:
             })
             messages.append({"role": "assistant", "content": "好的，我已了解之前的对话内容。"})
 
-        # 对话历史
+        # Chat history
         history = self._short_term.get(session_id)
         for i, msg in enumerate(history):
             m = _to_anthropic_message(msg)
@@ -279,7 +292,7 @@ class LLMClient:
         return messages
 
     # ------------------------------------------------------------------
-    # 主对话入口
+    # Main chat entry point
     # ------------------------------------------------------------------
 
     async def chat(
@@ -299,20 +312,35 @@ class LLMClient:
         is_group = group_id is not None and self._timeline is not None
 
         if is_group:
-            # 群聊：消息已由 group_listener 添加到 timeline，不再 add
-            if self._timeline.needs_compact(group_id, self._max_context_tokens, self._compact_ratio):
+            assert group_id is not None
+            assert self._timeline is not None
+            # Group: messages already added to timeline by group_listener
+            if self._timeline.needs_compact(group_id, self._max_context_tokens, self._full_ratio):
                 await self._compact_group(group_id, identity)
+            elif self._timeline.needs_compact(group_id, self._max_context_tokens, self._micro_ratio):
+                self._micro_compact_group(group_id)
             messages = self._build_group_messages(group_id)
         else:
-            # 私聊：保持原有 ShortTermMemory 逻辑
+            # Private: use ShortTermMemory
             self._short_term.add(session_id, "user", user_text)
-            if self._short_term.needs_compact(session_id, self._max_context_tokens, self._compact_ratio):
+            if self._short_term.needs_compact(session_id, self._max_context_tokens, self._full_ratio):
                 await self._compact(session_id)
+            elif self._short_term.needs_compact(session_id, self._max_context_tokens, self._micro_ratio):
+                self._micro_compact_private(session_id)
             messages = self._build_private_messages(session_id)
 
-        system_blocks = await self._prompt.build_blocks(
-            identity=identity, user_id=user_id, group_id=group_id, bot_self_id=self._bot_self_id,
-        )
+        if self._memo_store:
+            try:
+                system_blocks = await self._prompt.build_blocks(
+                    user_id=user_id,
+                    group_id=group_id,
+                    memo_store=self._memo_store,
+                )
+            except Exception:
+                logger.exception("build_blocks failed, falling back to static block")
+                system_blocks = [self._prompt.static_block]
+        else:
+            system_blocks = [self._prompt.static_block]
 
         tool_defs: list[dict[str, Any]] | None = None
         if not self._tools.empty:
@@ -331,7 +359,7 @@ class LLMClient:
                 reason = pass_turn.input.get("reason", "")
                 elapsed = time.monotonic() - t0
                 logger.info("pass_turn | session={} reason={!r} elapsed={:.1f}s", session_id, reason, elapsed)
-                if is_group:
+                if is_group and group_id is not None and self._timeline is not None:
                     self._timeline.set_input_tokens(group_id, result["input_tokens"])
                 return None
             # Filter out pass_turn so it doesn't enter the tool-execution loop
@@ -352,7 +380,7 @@ class LLMClient:
                     "reply | session={} len={} segments={} elapsed={:.1f}s",
                     session_id, len(full_reply), len(segments), elapsed,
                 )
-                if is_group:
+                if is_group and group_id is not None and self._timeline is not None:
                     self._timeline.add(group_id, role="assistant", content=full_reply)
                     self._timeline.set_input_tokens(group_id, result["input_tokens"])
                 else:
@@ -366,7 +394,7 @@ class LLMClient:
                     round_i, tu.name, json.dumps(tu.input, ensure_ascii=False)[:200],
                 )
 
-            # assistant 消息
+            # Assistant message content
             assistant_content: list[dict[str, Any]] = []
             if text:
                 assistant_content.append({"type": "text", "text": text})
@@ -374,13 +402,20 @@ class LLMClient:
                 assistant_content.append({"type": "tool_use", "id": tu.id, "name": tu.name, "input": tu.input})
             messages.append({"role": "assistant", "content": assistant_content})
 
-            # 执行工具
+            # Execute tools in parallel
+            tool_ctx = ctx or ToolContext(user_id=user_id, group_id=group_id)
+            call_results = await asyncio.gather(
+                *[self._tools.call(tu.name, json.dumps(tu.input), ctx=tool_ctx) for tu in tool_uses],
+                return_exceptions=True,
+            )
+            # Convert any exceptions to error strings
+            call_results = [
+                r if isinstance(r, str) else f"Tool error: {r}" for r in call_results
+            ]
             tool_results: list[dict[str, Any]] = []
-            for tu in tool_uses:
-                tool_ctx = ctx or ToolContext(user_id=user_id, group_id=group_id)
-                tool_result = await self._tools.call(tu.name, json.dumps(tu.input), ctx=tool_ctx)
-                logger.debug("tool_result | name={} result={!r}", tu.name, tool_result[:200])
-                tool_results.append({"type": "tool_result", "tool_use_id": tu.id, "content": tool_result})
+            for tu, result_text in zip(tool_uses, call_results, strict=True):
+                logger.debug("tool_result | name={} result={!r}", tu.name, result_text[:200])
+                tool_results.append({"type": "tool_result", "tool_use_id": tu.id, "content": result_text})
             messages.append({"role": "user", "content": tool_results})
 
         logger.warning("tool loop exhausted | session={} rounds={}", session_id, MAX_TOOL_ROUNDS)
@@ -393,7 +428,7 @@ class LLMClient:
                 await asyncio.sleep(_SEGMENT_DELAY)
         last_seg = segments[-1]
         full_reply = "\n".join(segments)
-        if is_group:
+        if is_group and group_id is not None and self._timeline is not None:
             self._timeline.add(group_id, role="assistant", content=full_reply)
             self._timeline.set_input_tokens(group_id, result["input_tokens"])
         else:
@@ -402,121 +437,235 @@ class LLMClient:
         return last_seg
 
     # ------------------------------------------------------------------
-    # Compact — 私聊
+    # Micro compact — drop oldest messages without LLM call
     # ------------------------------------------------------------------
 
-    async def _compact(self, session_id: str) -> None:
-        """将历史前半部分压缩成摘要。"""
-        history = self._short_term.get(session_id)
-        if len(history) < 4:
-            return  # 消息太少，不值得 compact
-
-        old_summary = self._short_term.get_summary(session_id)
-        split = len(history) // 2
-
-        # 拼装要压缩的内容
-        lines: list[str] = []
-        if old_summary:
-            lines.append(f"[之前的对话摘要]\n{old_summary}\n")
-        for msg in history[:split]:
-            role_label = "用户" if msg["role"] == "user" else "助手"
-            lines.append(f"{role_label}: {msg['content']}")
-        conversation_text = "\n".join(lines)
-
-        system = [{"type": "text", "text": (
-            "你是一个对话压缩助手。请将以下对话历史压缩成简洁的中文摘要。"
-            "保留关键信息：用户的问题、重要决策、关键结论、用户偏好。"
-            "去掉寒暄、重复内容和过程性细节。输出纯摘要文本，不要加标题或格式。"
-        )}]
-        compress_messages = [{"role": "user", "content": conversation_text}]
-
-        logger.info("compact | session={} split={}/{}", session_id, split, len(history))
-        result = await _call_api(
-            self._session, self._base_url, self._api_key, self._model,
-            system, compress_messages, max_tokens=1024,
-        )
-        new_summary = result["text"].strip()
-        if new_summary:
-            self._short_term.compact(session_id, split, new_summary)
-            logger.info("compact done | session={} summary_len={}", session_id, len(new_summary))
-        else:
-            logger.warning("compact produced empty summary | session={}", session_id)
-
-    # ------------------------------------------------------------------
-    # Compact — 群聊（增强：提取长期记忆）
-    # ------------------------------------------------------------------
-
-    async def _compact_group(self, group_id: str, identity: Identity) -> None:
-        """将群聊时间线前半部分压缩成摘要，并提取用户长期记忆。"""
+    def _micro_compact_group(self, group_id: str) -> None:
+        """Drop oldest 25% of messages. No LLM call, no summary change, no cache break."""
         assert self._timeline is not None
         messages = self._timeline.get_messages(group_id)
         if len(messages) < 4:
             return
+        drop = len(messages) // 4
+        self._timeline.drop_oldest(group_id, drop)
+        logger.info("micro_compact_group | group={} dropped={}", group_id, drop)
 
-        old_summary = self._timeline.get_summary(group_id)
-        split = len(messages) // 2
+    def _micro_compact_private(self, session_id: str) -> None:
+        """Drop oldest 25% of messages from short-term memory."""
+        history = self._short_term.get(session_id)
+        if len(history) < 4:
+            return
+        drop = len(history) // 4
+        self._short_term.drop_oldest(session_id, drop)
+        logger.info("micro_compact_private | session={} dropped={}", session_id, drop)
 
-        # 拼装要压缩的内容
-        lines: list[str] = []
-        if old_summary:
-            lines.append(f"[之前的对话摘要]\n{old_summary}\n")
-        for msg in messages[:split]:
-            if msg["role"] == "assistant":
-                lines.append(f"{identity.name}: {msg['content']}")
-            elif msg["speaker"]:
-                lines.append(f"{msg['speaker']}: {msg['content']}")
-            else:
-                lines.append(f"用户: {msg['content']}")
-        conversation_text = "\n".join(lines)
+    # ------------------------------------------------------------------
+    # Compact — private chat
+    # ------------------------------------------------------------------
 
-        system = [{"type": "text", "text": (
-            "你是一个对话分析助手。请完成两个任务：\n"
-            "1. 将以下群聊记录压缩成简洁的中文摘要。保留关键信息：讨论话题、重要决策、关键结论。\n"
-            "2. 提取值得长期记住的用户信息（昵称、爱好、特征、关键事件）。\n\n"
-            "以 JSON 格式输出：\n"
-            '{"summary": "摘要文本", "memories": [{"user_id": "QQ号", "nickname": "昵称", '
-            '"traits": {"key": "value"}, "event": "事件描述"}]}\n\n'
-            "如果没有值得记住的用户信息，memories 为空数组。只输出 JSON，不要加其他文字。"
-        )}]
-        compress_messages = [{"role": "user", "content": conversation_text}]
+    async def _compact(self, session_id: str) -> None:
+        """Compress first half of history into summary and extract user memo."""
+        if self._private_compact_failures >= self._max_compact_failures:
+            logger.warning("compact circuit breaker active | session={}", session_id)
+            return
 
-        logger.info("compact_group | group={} split={}/{}", group_id, split, len(messages))
-        result = await _call_api(
-            self._session, self._base_url, self._api_key, self._model,
-            system, compress_messages, max_tokens=1024,
-        )
-        raw_text = result["text"].strip()
-
-        new_summary = ""
-        memories: list[dict[str, Any]] = []
         try:
-            parsed = json.loads(raw_text)
-            new_summary = parsed.get("summary", "")
-            memories = parsed.get("memories", [])
-        except (json.JSONDecodeError, TypeError):
-            logger.warning("compact_group JSON parse failed, using raw text as summary | group={}", group_id)
-            new_summary = raw_text
+            history = self._short_term.get(session_id)
+            if len(history) < 4:
+                return
 
-        if new_summary:
-            self._timeline.compact(group_id, split, new_summary)
-            logger.info(
-                "compact_group done | group={} summary_len={} memories={}",
-                group_id, len(new_summary), len(memories),
+            old_summary = self._short_term.get_summary(session_id)
+            split = len(history) // 2
+
+            # Assemble content for compression
+            lines: list[str] = []
+            if old_summary:
+                lines.append(f"[之前的对话摘要]\n{old_summary}\n")
+            for msg in history[:split]:
+                role_label = "用户" if msg["role"] == "user" else "助手"
+                lines.append(f"{role_label}: {msg['content']}")
+            conversation_text = "\n".join(lines)
+
+            # Extract user_id from session_id (format: "private_{user_id}")
+            user_memo_ctx = ""
+            user_id = ""
+            if self._memo_store and session_id.startswith("private_"):
+                user_id = session_id[len("private_"):]
+                memo = self._memo_store.read(f"user_{user_id}")
+                body = memo.body.strip() if memo else "暂无记录"
+                user_memo_ctx = f"\n当前用户备忘录：\n  「{body}」\n"
+
+            if self._memo_store and user_id:
+                system = [{"type": "text", "text": (
+                    "你是一个对话压缩助手。请完成两个任务：\n"
+                    "1. 将以下对话历史压缩成简洁的中文摘要。"
+                    "保留关键信息：用户的问题、重要决策、关键结论、用户偏好。"
+                    "去掉寒暄、重复内容和过程性细节。\n"
+                    "2. 更新用户备忘录（全文重写，不是追加）。\n"
+                    f"{user_memo_ctx}\n"
+                    '以 JSON 输出：{"summary": "摘要", "memo": "完整新版用户备忘录"}\n'
+                    "备忘录规则：记印象和结论，不记流水账。没有新信息可省略 memo 字段。只输出 JSON。"
+                )}]
+            else:
+                system = [{"type": "text", "text": (
+                    "你是一个对话压缩助手。请将以下对话历史压缩成简洁的中文摘要。"
+                    "保留关键信息：用户的问题、重要决策、关键结论、用户偏好。"
+                    "去掉寒暄、重复内容和过程性细节。输出纯摘要文本，不要加标题或格式。"
+                )}]
+            compress_messages = [{"role": "user", "content": conversation_text}]
+
+            logger.info("compact | session={} split={}/{}", session_id, split, len(history))
+            result = await _call_api(
+                self._session, self._base_url, self._api_key, self._model,
+                system, compress_messages, max_tokens=1024,
             )
-        else:
-            logger.warning("compact_group produced empty summary | group={}", group_id)
+            raw_text = result["text"].strip()
 
-        # 写入长期记忆
-        if self._long_term and memories:
-            for mem in memories:
-                uid = mem.get("user_id", "")
-                if not uid:
-                    continue
-                nickname = mem.get("nickname")
-                traits = mem.get("traits")
-                event = mem.get("event")
-                if nickname or traits:
-                    await self._long_term.update_profile(uid, nickname=nickname, traits=traits)
-                if event:
-                    await self._long_term.add_event(uid, event)
+            new_summary = ""
+            memo_text = ""
+            if self._memo_store and user_id:
+                try:
+                    parsed = json.loads(raw_text)
+                    new_summary = parsed.get("summary", "")
+                    memo_text = parsed.get("memo", "")
+                except (json.JSONDecodeError, TypeError):
+                    # Backward compat: treat whole text as summary
+                    logger.warning("compact JSON parse failed, using raw text as summary | session={}", session_id)
+                    new_summary = raw_text
+            else:
+                new_summary = raw_text
+
+            if new_summary:
+                self._short_term.compact(session_id, split, new_summary)
+                logger.info("compact done | session={} summary_len={}", session_id, len(new_summary))
+            else:
+                logger.warning("compact produced empty summary | session={}", session_id)
+
+            if self._memo_store and user_id and memo_text:
+                await self._memo_store.write(f"user_{user_id}", memo_text, f"compact:private:{session_id}")
+
+            self._private_compact_failures = 0
+            if self._on_compact:
+                self._on_compact()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self._private_compact_failures += 1
+            logger.exception("compact failed ({}/{})", self._private_compact_failures, self._max_compact_failures)
+
+    # ------------------------------------------------------------------
+    # Compact — group chat (with memo extraction)
+    # ------------------------------------------------------------------
+
+    async def _compact_group(self, group_id: str, identity: Identity) -> None:
+        """Compress first half of group timeline into summary and extract memos."""
+        if self._group_compact_failures >= self._max_compact_failures:
+            logger.warning("compact circuit breaker active | group={}", group_id)
+            return
+
+        try:
+            assert self._timeline is not None
+            messages = self._timeline.get_messages(group_id)
+            if len(messages) < 4:
+                return
+
+            old_summary = self._timeline.get_summary(group_id)
+            split = len(messages) // 2
+
+            # Assemble content for compression
+            lines: list[str] = []
+            if old_summary:
+                lines.append(f"[之前的对话摘要]\n{old_summary}\n")
+            for msg in messages[:split]:
+                if msg["role"] == "assistant":
+                    lines.append(f"{identity.name}: {msg['content']}")
+                elif msg["speaker"]:
+                    lines.append(f"{msg['speaker']}: {msg['content']}")
+                else:
+                    lines.append(f"用户: {msg['content']}")
+            conversation_text = "\n".join(lines)
+
+            # Build user memo context
+            user_memos_ctx = ""
+            group_memo_ctx = "暂无记录"
+            if self._memo_store:
+                seen_users: set[str] = set()
+                for msg in messages[:split]:
+                    speaker = msg.get("speaker") or ""
+                    if speaker:
+                        # Extract QQ号 from "昵称(QQ号)" format
+                        m = re.search(r"\((\d+)\)$", speaker)
+                        if m:
+                            seen_users.add(m.group(1))
+                for uid in sorted(seen_users):
+                    memo = self._memo_store.read(f"user_{uid}")
+                    body = memo.body.strip() if memo else "暂无记录"
+                    user_memos_ctx += f"  @{uid}: 「{body}」\n"
+
+                group_memo = self._memo_store.read(f"group_{group_id}")
+                group_memo_ctx = group_memo.body.strip() if group_memo else "暂无记录"
+
+            system = [{"type": "text", "text": (
+                "你是一个对话分析助手。请完成两个任务：\n"
+                "1. 将以下群聊记录压缩成简洁的中文摘要。保留关键信息。\n"
+                "2. 更新相关用户和群的备忘录（全文重写，不是追加）。\n\n"
+                f"当前用户备忘录：\n{user_memos_ctx}\n"
+                f"当前群备忘录：\n  「{group_memo_ctx}」\n\n"
+                "以 JSON 输出：\n"
+                '{"summary": "摘要", "memos": {"QQ号": "完整新版用户备忘录", ...}, '
+                '"group_memo": "完整新版群备忘录"}\n\n'
+                "备忘录规则：用 @QQ号 标注人物，#群号 标注群。QQ号是唯一身份标识，昵称不可信。\n"
+                "记印象和结论，不记流水账。没有新信息的用户可省略。只输出 JSON。"
+            )}]
+            compress_messages = [{"role": "user", "content": conversation_text}]
+
+            logger.info("compact_group | group={} split={}/{}", group_id, split, len(messages))
+            result = await _call_api(
+                self._session, self._base_url, self._api_key, self._model,
+                system, compress_messages, max_tokens=1024,
+            )
+            raw_text = result["text"].strip()
+
+            new_summary = ""
+            parsed: dict[str, Any] = {}
+            try:
+                parsed = json.loads(raw_text)
+                new_summary = parsed.get("summary", "")
+            except (json.JSONDecodeError, TypeError):
+                logger.warning("compact_group JSON parse failed, using raw text as summary | group={}", group_id)
+                new_summary = raw_text
+
+            # Batch all writes together
+            if new_summary:
+                self._timeline.compact(group_id, split, new_summary)
+            if self._memo_store:
+                memos = parsed.get("memos", {})
+                if not isinstance(memos, dict):
+                    logger.warning("compact_group memos is not a dict, skipping | group={}", group_id)
+                    memos = {}
+                for uid, memo_text in memos.items():
+                    if not (uid and memo_text and isinstance(uid, str) and uid.isdigit()):
+                        continue
+                    await self._memo_store.write(f"user_{uid}", memo_text, f"compact:group:{group_id}")
+                group_memo_text = parsed.get("group_memo", "")
+                if group_memo_text:
+                    await self._memo_store.write(f"group_{group_id}", group_memo_text, f"compact:group:{group_id}")
+
+            if new_summary:
+                logger.info(
+                    "compact_group done | group={} summary_len={} memos={}",
+                    group_id, len(new_summary), len(parsed.get("memos", {})),
+                )
+            else:
+                logger.warning("compact_group produced empty summary | group={}", group_id)
+
+            self._group_compact_failures = 0
+            if self._on_compact:
+                self._on_compact()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self._group_compact_failures += 1
+            logger.exception("compact_group failed ({}/{})", self._group_compact_failures, self._max_compact_failures)
+
 
