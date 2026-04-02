@@ -8,46 +8,57 @@ uv run ruff check src/         # Lint (add --fix for auto-fix)
 uv run pytest                  # Run all tests
 uv run pytest tests/test_identity.py::test_name -v  # Single test
 uv run pyright                 # Type check
-
-# Run bot locally (needs NapCat running)
-docker compose up napcat -d && uv run python bot.py
-
-# Run everything in Docker
-docker compose up -d
 ```
+
+| Task | Command |
+|------|---------|
+| Run locally | `docker compose up napcat -d && uv run python bot.py` |
+| Run all in Docker | `docker compose up -d` |
+| Restart bot (soul/config) | `docker compose restart bot` |
+| Rebuild bot (code/deps) | `docker compose up bot -d --build` |
+| Usage TUI | `uv run python -m src.llm.usage_cli tui day\|week\|month [date]` |
 
 ## Architecture
 
-QQ chat bot using NoneBot2 + Anthropic Claude API. NapCat handles QQ protocol over WebSocket; NoneBot2 dispatches events to plugins.
+QQ chat bot: NoneBot2 + Anthropic Claude API. NapCat handles QQ protocol over WebSocket.
 
 ```
 QQ ←→ NapCat (WS) ←→ NoneBot2 (bot.py)
                         ├── private_chat (DM, priority=10)
-                        │     → LLMClient.chat()
-                        │          ├── Anthropic SSE stream
-                        │          └── Tool loop (max 5 rounds)
-                        │               └── pass_turn tool → skip or reply
-                        │
+                        │     → LLMClient.chat() → Anthropic SSE stream
+                        │       └── Tool loop (max 5 rounds), pass_turn to skip
                         └── group_listener (priority=1, non-blocking)
-                              → GroupTimeline.add()
-                              → GroupChatScheduler.notify(is_at=...)
-                                   ├── @bot (is_at=True) → fire immediately
-                                   ├── debounce (N sec quiet) → LLM chat
-                                   └── batch (M msgs full)    → LLM chat
-                                        └── pass_turn tool → skip or reply
+                              → GroupTimeline → GroupChatScheduler
+                                ├── @bot → fire immediately
+                                ├── debounce (N sec quiet) → LLM chat
+                                └── batch (M msgs full) → LLM chat
 ```
 
-- Config: `BotConfig` (Pydantic) loaded via `config_loader.py` — TOML < env vars < CLI args
-- Ruff: configured in `pyproject.toml`, RUF001/RUF002/RUF003 ignored for Chinese full-width chars
-- Docker: **always `docker compose restart napcat`**, never `down` + `up` (device fingerprint → anti-fraud)
+Key design choices:
+- **Raw Anthropic API** via aiohttp SSE, no SDK — tool calls touch `_call_api` in `src/llm/client.py`
+- **Prompt caching** — system blocks use `cache_control: ephemeral`; second-to-last history msg cached
+- **Context compaction** — front half of history compressed via LLM when exceeding `max_context_tokens × compact_ratio`
+- **Soul directory** — `soul/identity.md` (persona), `soul/instruction.md` (behavioral directives)
+- **Memory** — short-term: in-memory deque per session; long-term: `.qmd` files in `storage/memories/`
+- **Config**: `BotConfig` (Pydantic) via `config_loader.py` — TOML < env vars < CLI args
+- **Ruff**: `pyproject.toml`, RUF001/RUF002/RUF003 ignored (Chinese full-width chars)
+- **Docker**: **always `docker compose restart napcat`**, never `down`+`up` (device fingerprint → anti-fraud)
 
-Details: [docs/architecture.md](docs/architecture.md) — design decisions, config, tools, access control
-Operations: [docs/operations.md](docs/operations.md) — Docker/NapCat, building & updating
+Deep dives → [docs/architecture.md](docs/architecture.md) | Docker/ops → [docs/operations.md](docs/operations.md)
 
 ## Workflow
 
-All tests must pass (`uv run pytest`) before committing code. Same for lint and type checks.
+All tests must pass (`uv run pytest`) before committing. Same for lint and type checks.
 
 ## Language
 
-User-facing strings and identity configs are in Chinese. Everything else (code, comments, docstrings, log messages, commit messages) in English.
+Chinese: user-facing strings, identity configs. English: code, comments, docstrings, logs, commits.
+
+## Maintaining this file
+
+Keep CLAUDE.md as a **self-contained index**: high-frequency knowledge inline, low-frequency details in `docs/`.
+
+- **Inline if**: every task needs it (architecture overview, key patterns, commands, rules)
+- **Link if**: only relevant when working on that subsystem (scheduler tuning, Docker build stages, config fields)
+- **Add commands** to the table or code block, not as new sections
+- **No duplication** with `docs/` — if detail is already linked, don't repeat it here
