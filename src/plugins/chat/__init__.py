@@ -112,6 +112,14 @@ async def _init() -> None:
     if bot_config.llm.usage.enabled:
         _llm._usage_tracker = _usage_tracker
 
+    if bot_config.llm.usage.enabled:
+        import nonebot
+
+        from src.llm.usage_routes import create_usage_router
+
+        app = nonebot.get_app()
+        app.include_router(create_usage_router(_usage_tracker))
+
     _scheduler = GroupChatScheduler(
         llm=_llm,
         timeline=_timeline,
