@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -46,6 +47,9 @@ class UsageTracker:
     def __init__(self, db_path: str = "storage/usage.db") -> None:
         self._db_path = db_path
         self._db: aiosqlite.Connection | None = None
+        self._alert_fn: Callable[[str], Awaitable[None]] | None = None
+        self._cache_hit_warn: float = 90.0
+        self._slow_threshold_s: float = 60.0
 
     async def init(self) -> None:
         self._db = await aiosqlite.connect(self._db_path)
@@ -59,6 +63,52 @@ class UsageTracker:
         if self._db:
             await self._db.close()
             self._db = None
+
+    def set_alert(
+        self,
+        *,
+        alert_fn: Callable[[str], Awaitable[None]],
+        cache_hit_warn: float = 90.0,
+        slow_threshold_s: float = 60.0,
+    ) -> None:
+        self._alert_fn = alert_fn
+        self._cache_hit_warn = cache_hit_warn
+        self._slow_threshold_s = slow_threshold_s
+
+    async def _check_alerts(
+        self,
+        *,
+        call_type: str,
+        elapsed_s: float,
+        error: str | None,
+        input_tokens: int,
+        cache_read_tokens: int,
+        cache_create_tokens: int,
+    ) -> None:
+        if not self._alert_fn:
+            return
+
+        if error:
+            msg = f"⚠ LLM call error: {error}"
+            logger.warning("usage_alert | {}", msg)
+            await self._alert_fn(msg)
+            return  # error alert takes priority, skip others
+
+        if elapsed_s > self._slow_threshold_s:
+            msg = f"⚠ LLM slow call: {elapsed_s:.1f}s (threshold: {self._slow_threshold_s:.0f}s)"
+            logger.warning("usage_alert | {}", msg)
+            await self._alert_fn(msg)
+            return  # slow alert takes priority, skip cache check
+
+        # Cache hit check — only for chat/proactive (compact/dream don't use prompt cache)
+        if call_type in ("chat", "proactive"):
+            total = input_tokens + cache_read_tokens + cache_create_tokens
+            if total > 0:
+                hit_rate = cache_read_tokens / total * 100
+                if hit_rate < self._cache_hit_warn:
+                    msg = f"⚠ Cache hit rate low: {hit_rate:.0f}% (threshold: {self._cache_hit_warn:.0f}%)"
+                    logger.warning("usage_alert | {}", msg)
+                    await self._alert_fn(msg)
 
     async def record(
         self,
@@ -93,6 +143,11 @@ class UsageTracker:
                 input_tokens, output_tokens, cache_read_tokens, cache_create_tokens,
                 tool_rounds, elapsed_s,
                 f" error={error}" if error else "",
+            )
+            await self._check_alerts(
+                call_type=call_type, elapsed_s=elapsed_s, error=error,
+                input_tokens=input_tokens, cache_read_tokens=cache_read_tokens,
+                cache_create_tokens=cache_create_tokens,
             )
         except Exception:
             logger.exception("usage record failed")

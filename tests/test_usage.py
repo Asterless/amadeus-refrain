@@ -128,3 +128,66 @@ async def test_summary_month(tracker: UsageTracker) -> None:
     month_str = now.strftime("%Y-%m")
     summary = await tracker.summary_month(month_str)
     assert summary["total_calls"] == 5
+
+
+from unittest.mock import AsyncMock
+
+
+async def test_alert_on_slow_call(tracker: UsageTracker) -> None:
+    alert_fn = AsyncMock()
+    tracker.set_alert(alert_fn=alert_fn, cache_hit_warn=90.0, slow_threshold_s=2.0)
+    await tracker.record(
+        call_type="chat", user_id="1", group_id=None, model="m",
+        input_tokens=100, cache_read_tokens=80, cache_create_tokens=10,
+        output_tokens=50, tool_rounds=0, elapsed_s=5.0,
+    )
+    alert_fn.assert_called_once()
+    assert "slow" in alert_fn.call_args[0][0].lower() or "慢" in alert_fn.call_args[0][0]
+
+
+async def test_alert_on_low_cache_hit(tracker: UsageTracker) -> None:
+    alert_fn = AsyncMock()
+    tracker.set_alert(alert_fn=alert_fn, cache_hit_warn=90.0, slow_threshold_s=999.0)
+    await tracker.record(
+        call_type="chat", user_id="1", group_id=None, model="m",
+        input_tokens=100, cache_read_tokens=10, cache_create_tokens=0,
+        output_tokens=50, tool_rounds=0, elapsed_s=1.0,
+    )
+    alert_fn.assert_called_once()
+    assert "cache" in alert_fn.call_args[0][0].lower()
+
+
+async def test_alert_on_error(tracker: UsageTracker) -> None:
+    alert_fn = AsyncMock()
+    tracker.set_alert(alert_fn=alert_fn, cache_hit_warn=90.0, slow_threshold_s=999.0)
+    await tracker.record(
+        call_type="chat", user_id="1", group_id=None, model="m",
+        input_tokens=0, cache_read_tokens=0, cache_create_tokens=0,
+        output_tokens=0, tool_rounds=0, elapsed_s=0.5,
+        error="API timeout",
+    )
+    alert_fn.assert_called_once()
+    assert "error" in alert_fn.call_args[0][0].lower() or "错误" in alert_fn.call_args[0][0]
+
+
+async def test_no_alert_when_ok(tracker: UsageTracker) -> None:
+    alert_fn = AsyncMock()
+    tracker.set_alert(alert_fn=alert_fn, cache_hit_warn=90.0, slow_threshold_s=60.0)
+    await tracker.record(
+        call_type="chat", user_id="1", group_id=None, model="m",
+        input_tokens=10, cache_read_tokens=90, cache_create_tokens=0,
+        output_tokens=50, tool_rounds=0, elapsed_s=1.0,
+    )
+    alert_fn.assert_not_called()
+
+
+async def test_no_cache_alert_for_compact(tracker: UsageTracker) -> None:
+    """compact calls don't use prompt cache, so no cache hit warning."""
+    alert_fn = AsyncMock()
+    tracker.set_alert(alert_fn=alert_fn, cache_hit_warn=90.0, slow_threshold_s=999.0)
+    await tracker.record(
+        call_type="compact", user_id="1", group_id=None, model="m",
+        input_tokens=100, cache_read_tokens=0, cache_create_tokens=0,
+        output_tokens=50, tool_rounds=0, elapsed_s=1.0,
+    )
+    alert_fn.assert_not_called()
