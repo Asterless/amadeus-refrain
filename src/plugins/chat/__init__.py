@@ -344,7 +344,7 @@ async def handle_private_chat(bot: Bot, event: MessageEvent) -> None:
         reply = await _llm.chat(
             session_id=sid,
             user_id=str(event.user_id),
-            user_text=user_content,
+            user_content=user_content,
             identity=identity,
             group_id=None,
             ctx=ctx,

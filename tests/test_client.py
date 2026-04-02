@@ -8,12 +8,13 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 
 from src.identity.models import Identity
-from src.llm.client import LLMClient, _ToolUse
+from src.llm.client import LLMClient, _ToolUse, _to_anthropic_message
 from src.llm.prompt import PromptBuilder
 from src.llm.usage import UsageTracker
 from src.memory.group_timeline import GroupTimeline
 from src.memory.memo_store import MemoStore
-from src.memory.short_term import ShortTermMemory
+from src.memory.short_term import ChatMessage, ShortTermMemory
+from src.memory.types import ContentBlock, ImageRefBlock, TextBlock
 from src.tools.registry import ToolRegistry
 
 _IDENTITY = Identity(id="t", name="Bot", personality="p")
@@ -291,7 +292,7 @@ class TestPassTurn:
                 result = await client.chat(
                     session_id="group_12345",
                     user_id="111",
-                    user_text="hello",
+                    user_content="hello",
                     identity=_IDENTITY,
                     group_id=gid,
                     ctx=None,
@@ -313,7 +314,7 @@ async def test_chat_records_usage(prompt, short_term, tools, tmp_path) -> None:
             with patch("src.llm.client._call_api", new_callable=AsyncMock, return_value=MOCK_RESULT_FULL):
                 await client.chat(
                     session_id="private_100", user_id="100",
-                    user_text="hello", identity=_IDENTITY,
+                    user_content="hello", identity=_IDENTITY,
                 )
             await asyncio.sleep(0)
         rows = await tracker.query_raw("SELECT * FROM llm_calls")
@@ -343,3 +344,28 @@ async def test_compact_records_usage(prompt, short_term, tools, tmp_path) -> Non
         assert len(rows) == 1
     finally:
         await tracker.close()
+
+
+# ---------------------------------------------------------------------------
+# _to_anthropic_message — content block passthrough
+# ---------------------------------------------------------------------------
+
+
+def test_to_anthropic_message_str() -> None:
+    """String content passes through unchanged."""
+    msg = ChatMessage(role="user", content="hello")
+    result = _to_anthropic_message(msg)
+    assert result == {"role": "user", "content": "hello"}
+
+
+def test_to_anthropic_message_blocks() -> None:
+    """Block content passes through as-is (image_ref converted later)."""
+    blocks: list[ContentBlock] = [
+        TextBlock(type="text", text="look"),
+        ImageRefBlock(type="image_ref", path="cache/ab/abc.jpg", media_type="image/jpeg"),
+    ]
+    msg = ChatMessage(role="user", content=blocks)
+    result = _to_anthropic_message(msg)
+    assert result["role"] == "user"
+    assert isinstance(result["content"], list)
+    assert len(result["content"]) == 2
