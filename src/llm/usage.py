@@ -104,3 +104,64 @@ class UsageTracker:
         cursor = await self._db.execute(sql, params)
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
+
+    async def summary_today(self) -> dict[str, Any]:
+        today = datetime.now(UTC).strftime("%Y-%m-%d")
+        return await self._summary_for_period(f"{today}%")
+
+    async def summary_month(self, month: str | None = None) -> dict[str, Any]:
+        if month is None:
+            month = datetime.now(UTC).strftime("%Y-%m")
+        return await self._summary_for_period(f"{month}%")
+
+    async def _summary_for_period(self, ts_like: str) -> dict[str, Any]:
+        rows = await self.query_raw(
+            """
+            SELECT
+                COUNT(*)        AS total_calls,
+                COALESCE(SUM(input_tokens + cache_read_tokens + cache_create_tokens), 0) AS total_input_tokens,
+                COALESCE(SUM(output_tokens), 0) AS total_output_tokens,
+                COALESCE(SUM(CASE WHEN call_type='chat' THEN 1 ELSE 0 END), 0) AS chat_calls,
+                COALESCE(SUM(CASE WHEN call_type='proactive' THEN 1 ELSE 0 END), 0) AS proactive_calls,
+                COALESCE(SUM(CASE WHEN call_type='compact' THEN 1 ELSE 0 END), 0) AS compact_calls,
+                COALESCE(SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END), 0) AS error_count,
+                COALESCE(AVG(elapsed_s), 0) AS avg_elapsed_s
+            FROM llm_calls WHERE ts LIKE ?
+            """,
+            (ts_like,),
+        )
+        return rows[0] if rows else {}
+
+    async def top_users(self, days: int = 7, limit: int = 10) -> list[dict[str, Any]]:
+        return await self.query_raw(
+            """
+            SELECT user_id,
+                   COUNT(*) AS calls,
+                   SUM(input_tokens + cache_read_tokens + cache_create_tokens) AS total_input,
+                   SUM(output_tokens) AS total_output
+            FROM llm_calls
+            WHERE user_id IS NOT NULL
+              AND ts >= datetime('now', ?)
+            GROUP BY user_id
+            ORDER BY total_input + total_output DESC
+            LIMIT ?
+            """,
+            (f"-{days} days", limit),
+        )
+
+    async def top_groups(self, days: int = 7, limit: int = 10) -> list[dict[str, Any]]:
+        return await self.query_raw(
+            """
+            SELECT group_id,
+                   COUNT(*) AS calls,
+                   SUM(input_tokens + cache_read_tokens + cache_create_tokens) AS total_input,
+                   SUM(output_tokens) AS total_output
+            FROM llm_calls
+            WHERE group_id IS NOT NULL
+              AND ts >= datetime('now', ?)
+            GROUP BY group_id
+            ORDER BY total_input + total_output DESC
+            LIMIT ?
+            """,
+            (f"-{days} days", limit),
+        )
