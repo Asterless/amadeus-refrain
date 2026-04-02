@@ -91,6 +91,17 @@ class DreamConfig(BaseModel):
     max_rounds: int = 15
 
 
+class VisionConfig(BaseModel):
+    """多模态视觉配置。"""
+
+    enabled: bool = True
+    max_images_per_message: int = 5
+    max_images_per_request: int = 15
+    max_dimension: int = 768
+    cache_dir: str = "storage/image_cache"
+    cache_max_age_hours: int = 24
+
+
 class BotConfig(BaseModel):
     """全局 Bot 配置。"""
 
@@ -102,5 +113,6 @@ class BotConfig(BaseModel):
     soul: SoulConfig = SoulConfig()
     group: GroupConfig = GroupConfig()
     napcat: NapcatConfig = NapcatConfig()
+    vision: VisionConfig = VisionConfig()
     admins: dict[str, str] = {}
     allowed_private_users: list[int] = []
