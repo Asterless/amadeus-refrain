@@ -208,7 +208,6 @@ def test_vision_config_defaults() -> None:
     v = VisionConfig()
     assert v.enabled is True
     assert v.max_images_per_message == 5
-    assert v.max_images_per_request == 15
     assert v.max_dimension == 768
     assert v.cache_dir == "storage/image_cache"
     assert v.cache_max_age_hours == 24
@@ -223,7 +222,6 @@ def test_vision_config_from_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 [vision]
 enabled = false
 max_images_per_message = 3
-max_images_per_request = 10
 max_dimension = 512
 cache_dir = "custom/cache"
 cache_max_age_hours = 12
@@ -232,7 +230,6 @@ cache_max_age_hours = 12
     cfg = load_config(config_path=str(toml_file))
     assert cfg.vision.enabled is False
     assert cfg.vision.max_images_per_message == 3
-    assert cfg.vision.max_images_per_request == 10
     assert cfg.vision.max_dimension == 512
     assert cfg.vision.cache_dir == "custom/cache"
     assert cfg.vision.cache_max_age_hours == 12

@@ -79,51 +79,28 @@ def _content_text(content: Content) -> str:
 def _resolve_image_refs(
     messages: list[dict[str, Any]],
     image_cache: ImageCache | None,
-    max_images: int,
 ) -> list[dict[str, Any]]:
-    """Convert image_ref blocks to Anthropic image blocks (base64).
-
-    Enforces a per-request image cap. Oldest images are replaced first.
-    """
+    """Convert image_ref blocks to Anthropic image blocks (base64)."""
     if image_cache is None:
         return messages
 
-    # First pass: find all image_ref positions
-    image_positions: list[tuple[int, int]] = []  # (msg_index, block_index)
-    for mi, msg in enumerate(messages):
-        content = msg.get("content")
-        if isinstance(content, list):
-            for bi, block in enumerate(content):
-                if isinstance(block, dict) and block.get("type") == "image_ref":
-                    image_positions.append((mi, bi))
-
-    # Determine which images to keep (newest first — keep last N)
-    keep_set = set(image_positions[-max_images:]) if len(image_positions) > max_images else set(image_positions)
-
-    # Second pass: resolve or replace
-    for mi, msg in enumerate(messages):
+    for msg in messages:
         content = msg.get("content")
         if not isinstance(content, list):
             continue
         new_content: list[dict[str, Any]] = []
-        for bi, block in enumerate(content):
+        for block in content:
             if not isinstance(block, dict) or block.get("type") != "image_ref":
                 new_content.append(block)
                 continue
             cache_ctrl = block.get("cache_control")
-            if (mi, bi) not in keep_set:
-                fallback: dict[str, Any] = {"type": "text", "text": "[图片]"}
-                if cache_ctrl:
-                    fallback["cache_control"] = cache_ctrl
-                new_content.append(fallback)
-                continue
             resolved = image_cache.load_as_base64(block)
             if resolved is not None:
                 if cache_ctrl:
                     resolved = {**resolved, "cache_control": cache_ctrl}
                 new_content.append(resolved)
             else:
-                fallback = {"type": "text", "text": "[图片已过期]"}
+                fallback: dict[str, Any] = {"type": "text", "text": "[图片已过期]"}
                 if cache_ctrl:
                     fallback["cache_control"] = cache_ctrl
                 new_content.append(fallback)
@@ -268,7 +245,6 @@ class LLMClient:
         bot_self_id: str = "",
         on_compact: Callable[[], None] | None = None,
         image_cache: ImageCache | None = None,
-        max_images_per_request: int = 15,
     ) -> None:
         connector = aiohttp.TCPConnector(
             enable_cleanup_closed=True,
@@ -296,7 +272,6 @@ class LLMClient:
         self._on_compact = on_compact
         self._usage_tracker: UsageTracker | None = None
         self._image_cache = image_cache
-        self._max_images_per_request = max_images_per_request
 
     async def close(self) -> None:
         await self._session.close()
@@ -464,7 +439,7 @@ class LLMClient:
         else:
             system_blocks = [self._prompt.static_block]
 
-        messages = _resolve_image_refs(messages, self._image_cache, self._max_images_per_request)
+        messages = _resolve_image_refs(messages, self._image_cache)
 
         tool_defs: list[dict[str, Any]] | None = None
         if not self._tools.empty:

@@ -129,7 +129,6 @@ async def _init() -> None:
         memo_store=memo_store,
         on_compact=lambda: _dream.notify_compact(),
         image_cache=_image_cache if _vision_enabled else None,
-        max_images_per_request=bot_config.vision.max_images_per_request,
     )
     if bot_config.llm.usage.enabled:
         _llm._usage_tracker = _usage_tracker

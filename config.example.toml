@@ -140,9 +140,6 @@ enabled = true
 # 单条消息最多处理的图片数，超出的用 [图片] 代替
 max_images_per_message = 5
 
-# 单次 API 请求累计图片上限（跨所有历史消息）
-max_images_per_request = 15
-
 # 图片缩放最大边像素
 max_dimension = 768
 

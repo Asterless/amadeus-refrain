@@ -96,7 +96,6 @@ class VisionConfig(BaseModel):
 
     enabled: bool = True
     max_images_per_message: int = 5
-    max_images_per_request: int = 15
     max_dimension: int = 768
     cache_dir: str = "storage/image_cache"
     cache_max_age_hours: int = 24

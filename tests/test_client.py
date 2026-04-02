@@ -407,7 +407,7 @@ def test_resolve_image_refs_none_cache() -> None:
         {"type": "text", "text": "hi"},
         {"type": "image_ref", "path": "x.jpg", "media_type": "image/jpeg"},
     ]}]
-    result = _resolve_image_refs(msgs, None, 10)
+    result = _resolve_image_refs(msgs, None)
     assert result[0]["content"][1]["type"] == "image_ref"  # unchanged
 
 
@@ -421,7 +421,7 @@ def test_resolve_image_refs_resolves_to_base64() -> None:
         {"type": "text", "text": "看"},
         {"type": "image_ref", "path": "x.jpg", "media_type": "image/jpeg"},
     ]}]
-    result = _resolve_image_refs(msgs, mock_cache, 10)
+    result = _resolve_image_refs(msgs, mock_cache)
     assert result[0]["content"][1]["type"] == "image"
     assert result[0]["content"][1]["source"]["data"] == "abc123"
 
@@ -433,32 +433,9 @@ def test_resolve_image_refs_expired() -> None:
     msgs = [{"role": "user", "content": [
         {"type": "image_ref", "path": "gone.jpg", "media_type": "image/jpeg"},
     ]}]
-    result = _resolve_image_refs(msgs, mock_cache, 10)
+    result = _resolve_image_refs(msgs, mock_cache)
     assert result[0]["content"][0]["type"] == "text"
     assert "过期" in result[0]["content"][0]["text"]
-
-
-def test_resolve_image_refs_cap_oldest() -> None:
-    """Per-request cap replaces oldest images with [图片]."""
-    mock_cache = Mock()
-    mock_cache.load_as_base64.return_value = {
-        "type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "ok"},
-    }
-    msgs = [
-        {"role": "user", "content": [
-            {"type": "image_ref", "path": "old1.jpg", "media_type": "image/jpeg"},
-            {"type": "image_ref", "path": "old2.jpg", "media_type": "image/jpeg"},
-        ]},
-        {"role": "user", "content": [
-            {"type": "image_ref", "path": "new1.jpg", "media_type": "image/jpeg"},
-        ]},
-    ]
-    result = _resolve_image_refs(msgs, mock_cache, max_images=2)
-    # old1 should be replaced (oldest), old2+new1 kept
-    assert result[0]["content"][0]["type"] == "text"
-    assert result[0]["content"][0]["text"] == "[图片]"
-    assert result[0]["content"][1]["type"] == "image"  # old2 kept
-    assert result[1]["content"][0]["type"] == "image"  # new1 kept
 
 
 def test_resolve_image_refs_preserves_cache_control() -> None:
@@ -471,5 +448,5 @@ def test_resolve_image_refs_preserves_cache_control() -> None:
         {"type": "image_ref", "path": "x.jpg", "media_type": "image/jpeg",
          "cache_control": {"type": "ephemeral"}},
     ]}]
-    result = _resolve_image_refs(msgs, mock_cache, 10)
+    result = _resolve_image_refs(msgs, mock_cache)
     assert result[0]["content"][0]["cache_control"] == {"type": "ephemeral"}
