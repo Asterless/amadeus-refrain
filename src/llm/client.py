@@ -16,8 +16,10 @@ from src.identity.models import Identity
 from src.llm.prompt import PromptBuilder
 from src.llm.usage import UsageTracker
 from src.memory.group_timeline import GroupTimeline
+from src.memory.image_cache import ImageCache
 from src.memory.memo_store import MemoStore
 from src.memory.short_term import ChatMessage, ShortTermMemory
+from src.memory.types import Content
 from src.tools.context import ToolContext
 from src.tools.registry import ToolRegistry
 
@@ -63,8 +65,65 @@ def _cached_text(text: str) -> dict[str, Any]:
     return {"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}
 
 
-def _to_anthropic_message(msg: ChatMessage) -> dict[str, str]:
+def _to_anthropic_message(msg: ChatMessage) -> dict[str, Any]:
     return {"role": msg["role"], "content": msg["content"]}
+
+
+def _content_text(content: Content) -> str:
+    """Extract plain text from Content, ignoring image blocks."""
+    if isinstance(content, str):
+        return content
+    return " ".join(b["text"] for b in content if b["type"] == "text")
+
+
+def _resolve_image_refs(
+    messages: list[dict[str, Any]],
+    image_cache: ImageCache | None,
+    max_images: int,
+) -> list[dict[str, Any]]:
+    """Convert image_ref blocks to Anthropic image blocks (base64).
+
+    Enforces a per-request image cap. Oldest images are replaced first.
+    """
+    if image_cache is None:
+        return messages
+
+    # First pass: find all image_ref positions
+    image_positions: list[tuple[int, int]] = []  # (msg_index, block_index)
+    for mi, msg in enumerate(messages):
+        content = msg.get("content")
+        if isinstance(content, list):
+            for bi, block in enumerate(content):
+                if isinstance(block, dict) and block.get("type") == "image_ref":
+                    image_positions.append((mi, bi))
+
+    # Determine which images to keep (newest first — keep last N)
+    keep_set = set(image_positions[-max_images:]) if len(image_positions) > max_images else set(image_positions)
+
+    # Second pass: resolve or replace
+    for mi, msg in enumerate(messages):
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        new_content: list[dict[str, Any]] = []
+        for bi, block in enumerate(content):
+            if not isinstance(block, dict) or block.get("type") != "image_ref":
+                new_content.append(block)
+                continue
+            if (mi, bi) not in keep_set:
+                new_content.append({"type": "text", "text": "[图片]"})
+                continue
+            resolved = image_cache.load_as_base64(block)
+            if resolved is not None:
+                # Preserve cache_control if the original block had it
+                if "cache_control" in block:
+                    resolved = {**resolved, "cache_control": block["cache_control"]}
+                new_content.append(resolved)
+            else:
+                new_content.append({"type": "text", "text": "[图片已过期]"})
+        msg["content"] = new_content
+
+    return messages
 
 
 def _to_anthropic_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -202,6 +261,8 @@ class LLMClient:
         memo_store: MemoStore | None = None,
         bot_self_id: str = "",
         on_compact: Callable[[], None] | None = None,
+        image_cache: ImageCache | None = None,
+        max_images_per_request: int = 15,
     ) -> None:
         connector = aiohttp.TCPConnector(
             enable_cleanup_closed=True,
@@ -228,6 +289,8 @@ class LLMClient:
         self._bot_self_id = bot_self_id
         self._on_compact = on_compact
         self._usage_tracker: UsageTracker | None = None
+        self._image_cache = image_cache
+        self._max_images_per_request = max_images_per_request
 
     async def close(self) -> None:
         await self._session.close()
@@ -298,8 +361,13 @@ class LLMClient:
         cached_idx = self._timeline.get_cached_msg_index(group_id)
         if 0 < cached_idx < len(messages):
             target = messages[cached_idx]
-            if isinstance(target.get("content"), str):
-                messages[cached_idx] = {"role": target["role"], "content": [_cached_text(target["content"])]}
+            content = target.get("content")
+            if isinstance(content, str):
+                messages[cached_idx] = {"role": target["role"], "content": [_cached_text(content)]}
+            elif isinstance(content, list):
+                content = [*content]
+                content[-1] = {**content[-1], "cache_control": {"type": "ephemeral"}}
+                messages[cached_idx] = {"role": target["role"], "content": content}
 
         # Store second-to-last for next call (last may be merged with new user msg)
         if len(messages) >= 2:
@@ -325,7 +393,13 @@ class LLMClient:
         for i, msg in enumerate(history):
             m = _to_anthropic_message(msg)
             if i == len(history) - 2:
-                m = {"role": m["role"], "content": [_cached_text(m["content"])]}
+                content = m["content"]
+                if isinstance(content, str):
+                    m = {"role": m["role"], "content": [_cached_text(content)]}
+                elif isinstance(content, list):
+                    content = [*content]
+                    content[-1] = {**content[-1], "cache_control": {"type": "ephemeral"}}
+                    m = {"role": m["role"], "content": content}
             messages.append(m)
 
         return messages
@@ -338,13 +412,17 @@ class LLMClient:
         self,
         session_id: str,
         user_id: str,
-        user_text: str,
+        user_content: Content,
         identity: Identity,
         group_id: str | None = None,
         ctx: ToolContext | None = None,
         on_segment: Callable[[str], Awaitable[None]] | None = None,
     ) -> str | None:
-        logger.info("chat | session={} user={} identity={} text={!r}", session_id, user_id, identity.id, user_text[:80])
+        content_preview = user_content[:80] if isinstance(user_content, str) else str(user_content)[:80]
+        logger.info(
+            "chat | session={} user={} identity={} text={!r}",
+            session_id, user_id, identity.id, content_preview,
+        )
         t0 = time.monotonic()
 
         is_group = group_id is not None and self._timeline is not None
@@ -360,7 +438,7 @@ class LLMClient:
             messages = self._build_group_messages(group_id)
         else:
             # Private: use ShortTermMemory
-            self._short_term.add(session_id, "user", user_text)
+            self._short_term.add(session_id, "user", user_content)
             if self._short_term.needs_compact(session_id, self._max_context_tokens, self._full_ratio):
                 await self._compact(session_id)
             elif self._short_term.needs_compact(session_id, self._max_context_tokens, self._micro_ratio):
@@ -379,6 +457,8 @@ class LLMClient:
                 system_blocks = [self._prompt.static_block]
         else:
             system_blocks = [self._prompt.static_block]
+
+        messages = _resolve_image_refs(messages, self._image_cache, self._max_images_per_request)
 
         tool_defs: list[dict[str, Any]] | None = None
         if not self._tools.empty:
@@ -554,7 +634,7 @@ class LLMClient:
                 lines.append(f"[之前的对话摘要]\n{old_summary}\n")
             for msg in history[:split]:
                 role_label = "用户" if msg["role"] == "user" else "助手"
-                lines.append(f"{role_label}: {msg['content']}")
+                lines.append(f"{role_label}: {_content_text(msg['content'])}")
             conversation_text = "\n".join(lines)
 
             # Extract user_id from session_id (format: "private_{user_id}")
@@ -657,11 +737,11 @@ class LLMClient:
                 lines.append(f"[之前的对话摘要]\n{old_summary}\n")
             for msg in messages[:split]:
                 if msg["role"] == "assistant":
-                    lines.append(f"{identity.name}: {msg['content']}")
+                    lines.append(f"{identity.name}: {_content_text(msg['content'])}")
                 elif msg["speaker"]:
-                    lines.append(f"{msg['speaker']}: {msg['content']}")
+                    lines.append(f"{msg['speaker']}: {_content_text(msg['content'])}")
                 else:
-                    lines.append(f"用户: {msg['content']}")
+                    lines.append(f"用户: {_content_text(msg['content'])}")
             conversation_text = "\n".join(lines)
 
             # Build user memo context

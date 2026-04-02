@@ -2,12 +2,14 @@
 
 from typing import Literal, TypedDict
 
+from src.memory.types import Content
+
 _MAX_SESSIONS = 500
 
 
 class ChatMessage(TypedDict):
     role: Literal["user", "assistant"]
-    content: str
+    content: Content
 
 
 class _SessionState:
@@ -31,7 +33,7 @@ class ShortTermMemory:
             self._store[session_id] = _SessionState()
         return self._store[session_id]
 
-    def add(self, session_id: str, role: Literal["user", "assistant"], content: str) -> None:
+    def add(self, session_id: str, role: Literal["user", "assistant"], content: Content) -> None:
         state = self._get_or_create(session_id)
         state.messages.append(ChatMessage(role=role, content=content))
 

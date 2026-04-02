@@ -1,4 +1,5 @@
 from src.memory.short_term import ShortTermMemory
+from src.memory.types import ContentBlock, ImageRefBlock, TextBlock
 
 
 def test_add_and_get(short_term: ShortTermMemory) -> None:
@@ -87,6 +88,30 @@ def test_messages_accumulate_without_limit(short_term: ShortTermMemory) -> None:
     assert len(msgs) == 100
     assert msgs[0]["content"] == "msg0"
     assert msgs[99]["content"] == "msg99"
+
+
+def test_add_content_blocks(short_term: ShortTermMemory) -> None:
+    """Content can be a list of content blocks (multimodal)."""
+    blocks: list[ContentBlock] = [
+        TextBlock(type="text", text="look at this"),
+        ImageRefBlock(type="image_ref", path="storage/image_cache/ab/abc.jpg", media_type="image/jpeg"),
+    ]
+    short_term.add("s1", "user", blocks)
+    msgs = short_term.get("s1")
+    assert len(msgs) == 1
+    assert isinstance(msgs[0]["content"], list)
+    assert msgs[0]["content"][0]["type"] == "text"
+    assert msgs[0]["content"][1]["type"] == "image_ref"
+
+
+def test_mixed_str_and_blocks(short_term: ShortTermMemory) -> None:
+    """Str and block content can coexist in the same session."""
+    short_term.add("s1", "user", "plain text")
+    blocks: list[ContentBlock] = [TextBlock(type="text", text="with image")]
+    short_term.add("s1", "assistant", blocks)
+    msgs = short_term.get("s1")
+    assert isinstance(msgs[0]["content"], str)
+    assert isinstance(msgs[1]["content"], list)
 
 
 def test_max_sessions_eviction() -> None:

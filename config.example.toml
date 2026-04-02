@@ -99,4 +99,26 @@ batch_size = 10
 # 环境变量: NAPCAT_API_URL
 api_url = "http://localhost:29300"
 
+# ---------------------------------------------------------------------------
+# 多模态视觉（图片理解）
+# ---------------------------------------------------------------------------
+[vision]
+# 总开关，关闭后所有图片降级为 [图片] 文字
+enabled = true
+
+# 单条消息最多处理的图片数，超出的用 [图片] 代替
+max_images_per_message = 5
+
+# 单次 API 请求累计图片上限（跨所有历史消息）
+max_images_per_request = 15
+
+# 图片缩放最大边像素
+max_dimension = 768
+
+# 图片缓存目录
+cache_dir = "storage/image_cache"
+
+# 缓存过期时间（小时）
+cache_max_age_hours = 24
+
 

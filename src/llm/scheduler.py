@@ -168,7 +168,7 @@ class GroupChatScheduler:
             reply = await self._llm.chat(
                 session_id=session_id,
                 user_id="",
-                user_text="",
+                user_content="",
                 identity=identity,
                 group_id=group_id,
                 ctx=ctx,

@@ -3,6 +3,7 @@
 
 
 from src.memory.group_timeline import GroupTimeline
+from src.memory.types import ContentBlock, ImageRefBlock, TextBlock
 
 # ---------------------------------------------------------------------------
 # test_add_and_get_messages
@@ -163,3 +164,72 @@ def test_drop_oldest(group_timeline: GroupTimeline) -> None:
     messages = group_timeline.get_messages("g1")
     assert len(messages) == 7
     assert messages[0]["content"] == "msg3"
+
+
+# ---------------------------------------------------------------------------
+# test_add_content_blocks
+# ---------------------------------------------------------------------------
+
+
+def test_add_content_blocks(group_timeline: GroupTimeline) -> None:
+    blocks: list[ContentBlock] = [
+        TextBlock(type="text", text="看这个"),
+        ImageRefBlock(type="image_ref", path="storage/image_cache/ab/abc.jpg", media_type="image/jpeg"),
+    ]
+    group_timeline.add("g1", role="user", content=blocks, speaker="Alice(123)")
+    msgs = group_timeline.get_messages("g1")
+    assert len(msgs) == 1
+    assert isinstance(msgs[0]["content"], list)
+
+
+def test_to_anthropic_merges_multimodal_users(group_timeline: GroupTimeline) -> None:
+    blocks1: list[ContentBlock] = [
+        TextBlock(type="text", text="看图"),
+        ImageRefBlock(type="image_ref", path="cache/ab/abc.jpg", media_type="image/jpeg"),
+    ]
+    group_timeline.add("g1", role="user", content=blocks1, speaker="Alice(1)")
+    group_timeline.add("g1", role="user", content="纯文本", speaker="Bob(2)")
+
+    msgs = group_timeline.to_anthropic_messages("g1")
+    assert len(msgs) == 1
+    assert msgs[0]["role"] == "user"
+    content = msgs[0]["content"]
+    assert isinstance(content, list)
+    assert content[0]["type"] == "text"
+    assert content[0]["text"] == "Alice(1): 看图"
+    assert content[1]["type"] == "image_ref"
+    assert content[2]["type"] == "text"
+    assert content[2]["text"] == "Bob(2): 纯文本"
+
+
+def test_to_anthropic_str_and_blocks_mixed(group_timeline: GroupTimeline) -> None:
+    group_timeline.add("g1", role="user", content="hello", speaker="A(1)")
+    blocks: list[ContentBlock] = [
+        TextBlock(type="text", text="看"),
+        ImageRefBlock(type="image_ref", path="cache/img.jpg", media_type="image/jpeg"),
+    ]
+    group_timeline.add("g1", role="user", content=blocks, speaker="B(2)")
+    group_timeline.add("g1", role="assistant", content="OK")
+
+    msgs = group_timeline.to_anthropic_messages("g1")
+    assert len(msgs) == 2
+    assert isinstance(msgs[0]["content"], list)
+    assert msgs[1]["content"] == "OK"
+
+
+def test_to_anthropic_image_only_message_has_speaker(group_timeline: GroupTimeline) -> None:
+    """Image-only messages (no text) should still get a speaker prefix."""
+    blocks: list[ContentBlock] = [
+        ImageRefBlock(type="image_ref", path="cache/img.jpg", media_type="image/jpeg"),
+    ]
+    group_timeline.add("g1", role="user", content=blocks, speaker="Alice(1)")
+
+    msgs = group_timeline.to_anthropic_messages("g1")
+    assert len(msgs) == 1
+    content = msgs[0]["content"]
+    assert isinstance(content, list)
+    # First block should be the speaker prefix
+    assert content[0]["type"] == "text"
+    assert "Alice(1)" in content[0]["text"]
+    # Second block is the image
+    assert content[1]["type"] == "image_ref"

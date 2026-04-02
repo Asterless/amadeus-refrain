@@ -8,12 +8,13 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 
 from src.identity.models import Identity
-from src.llm.client import LLMClient, _ToolUse
+from src.llm.client import LLMClient, _content_text, _resolve_image_refs, _to_anthropic_message, _ToolUse
 from src.llm.prompt import PromptBuilder
 from src.llm.usage import UsageTracker
 from src.memory.group_timeline import GroupTimeline
 from src.memory.memo_store import MemoStore
-from src.memory.short_term import ShortTermMemory
+from src.memory.short_term import ChatMessage, ShortTermMemory
+from src.memory.types import ContentBlock, ImageRefBlock, TextBlock
 from src.tools.registry import ToolRegistry
 
 _IDENTITY = Identity(id="t", name="Bot", personality="p")
@@ -81,7 +82,10 @@ def _fill_messages(short_term: ShortTermMemory, sid: str, count: int = 8) -> Non
         short_term.add(sid, "user" if i % 2 == 0 else "assistant", f"msg {i}")
 
 
-MOCK_RESULT = {"text": "summary", "tool_uses": [], "input_tokens": 100, "output_tokens": 50, "cache_read": 0, "cache_create": 0}
+MOCK_RESULT = {
+    "text": "summary", "tool_uses": [], "input_tokens": 100,
+    "output_tokens": 50, "cache_read": 0, "cache_create": 0,
+}
 
 MOCK_RESULT_FULL = {
     "text": "reply text",
@@ -291,7 +295,7 @@ class TestPassTurn:
                 result = await client.chat(
                     session_id="group_12345",
                     user_id="111",
-                    user_text="hello",
+                    user_content="hello",
                     identity=_IDENTITY,
                     group_id=gid,
                     ctx=None,
@@ -313,7 +317,7 @@ async def test_chat_records_usage(prompt, short_term, tools, tmp_path) -> None:
             with patch("src.llm.client._call_api", new_callable=AsyncMock, return_value=MOCK_RESULT_FULL):
                 await client.chat(
                     session_id="private_100", user_id="100",
-                    user_text="hello", identity=_IDENTITY,
+                    user_content="hello", identity=_IDENTITY,
                 )
             await asyncio.sleep(0)
         rows = await tracker.query_raw("SELECT * FROM llm_calls")
@@ -343,3 +347,129 @@ async def test_compact_records_usage(prompt, short_term, tools, tmp_path) -> Non
         assert len(rows) == 1
     finally:
         await tracker.close()
+
+
+# ---------------------------------------------------------------------------
+# _to_anthropic_message — content block passthrough
+# ---------------------------------------------------------------------------
+
+
+def test_to_anthropic_message_str() -> None:
+    """String content passes through unchanged."""
+    msg = ChatMessage(role="user", content="hello")
+    result = _to_anthropic_message(msg)
+    assert result == {"role": "user", "content": "hello"}
+
+
+def test_to_anthropic_message_blocks() -> None:
+    """Block content passes through as-is (image_ref converted later)."""
+    blocks: list[ContentBlock] = [
+        TextBlock(type="text", text="look"),
+        ImageRefBlock(type="image_ref", path="cache/ab/abc.jpg", media_type="image/jpeg"),
+    ]
+    msg = ChatMessage(role="user", content=blocks)
+    result = _to_anthropic_message(msg)
+    assert result["role"] == "user"
+    assert isinstance(result["content"], list)
+    assert len(result["content"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# _content_text
+# ---------------------------------------------------------------------------
+
+
+def test_content_text_str() -> None:
+    assert _content_text("hello") == "hello"
+
+
+def test_content_text_blocks() -> None:
+    blocks: list[ContentBlock] = [
+        TextBlock(type="text", text="看这个"),
+        ImageRefBlock(type="image_ref", path="x.jpg", media_type="image/jpeg"),
+        TextBlock(type="text", text="不错吧"),
+    ]
+    assert _content_text(blocks) == "看这个 不错吧"
+
+
+def test_content_text_empty_list() -> None:
+    assert _content_text([]) == ""
+
+
+# ---------------------------------------------------------------------------
+# _resolve_image_refs
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_image_refs_none_cache() -> None:
+    """With no image_cache, messages pass through unchanged."""
+    msgs = [{"role": "user", "content": [
+        {"type": "text", "text": "hi"},
+        {"type": "image_ref", "path": "x.jpg", "media_type": "image/jpeg"},
+    ]}]
+    result = _resolve_image_refs(msgs, None, 10)
+    assert result[0]["content"][1]["type"] == "image_ref"  # unchanged
+
+
+def test_resolve_image_refs_resolves_to_base64() -> None:
+    """image_ref blocks should be converted to base64 image blocks."""
+    mock_cache = Mock()
+    mock_cache.load_as_base64.return_value = {
+        "type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "abc123"},
+    }
+    msgs = [{"role": "user", "content": [
+        {"type": "text", "text": "看"},
+        {"type": "image_ref", "path": "x.jpg", "media_type": "image/jpeg"},
+    ]}]
+    result = _resolve_image_refs(msgs, mock_cache, 10)
+    assert result[0]["content"][1]["type"] == "image"
+    assert result[0]["content"][1]["source"]["data"] == "abc123"
+
+
+def test_resolve_image_refs_expired() -> None:
+    """Expired images (load returns None) become [图片已过期]."""
+    mock_cache = Mock()
+    mock_cache.load_as_base64.return_value = None
+    msgs = [{"role": "user", "content": [
+        {"type": "image_ref", "path": "gone.jpg", "media_type": "image/jpeg"},
+    ]}]
+    result = _resolve_image_refs(msgs, mock_cache, 10)
+    assert result[0]["content"][0]["type"] == "text"
+    assert "过期" in result[0]["content"][0]["text"]
+
+
+def test_resolve_image_refs_cap_oldest() -> None:
+    """Per-request cap replaces oldest images with [图片]."""
+    mock_cache = Mock()
+    mock_cache.load_as_base64.return_value = {
+        "type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "ok"},
+    }
+    msgs = [
+        {"role": "user", "content": [
+            {"type": "image_ref", "path": "old1.jpg", "media_type": "image/jpeg"},
+            {"type": "image_ref", "path": "old2.jpg", "media_type": "image/jpeg"},
+        ]},
+        {"role": "user", "content": [
+            {"type": "image_ref", "path": "new1.jpg", "media_type": "image/jpeg"},
+        ]},
+    ]
+    result = _resolve_image_refs(msgs, mock_cache, max_images=2)
+    # old1 should be replaced (oldest), old2+new1 kept
+    assert result[0]["content"][0]["type"] == "text"
+    assert result[0]["content"][0]["text"] == "[图片]"
+    assert result[0]["content"][1]["type"] == "image"  # old2 kept
+    assert result[1]["content"][0]["type"] == "image"  # new1 kept
+
+
+def test_resolve_image_refs_preserves_cache_control() -> None:
+    """cache_control on image_ref blocks should transfer to resolved blocks."""
+    mock_cache = Mock()
+    mock_cache.load_as_base64.return_value = {
+        "type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "x"},
+    }
+    msgs = [{"role": "user", "content": [
+        {"type": "image_ref", "path": "x.jpg", "media_type": "image/jpeg",
+         "cache_control": {"type": "ephemeral"}},
+    ]}]
+    result = _resolve_image_refs(msgs, mock_cache, 10)
+    assert result[0]["content"][0]["cache_control"] == {"type": "ephemeral"}
