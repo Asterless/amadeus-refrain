@@ -24,7 +24,6 @@ MAX_TOOL_ROUNDS = 5
 _SEGMENT_SEP = "---"
 _SEGMENT_DELAY = 0.5  # seconds between segment sends
 _BLANK_LINE_RE = re.compile(r"\n{2,}")
-_DEFAULT_CACHE_HIT_WARN = 90.0  # percent — warn when hit rate drops below this
 
 
 def _clean_text(text: str) -> str:
@@ -158,30 +157,30 @@ async def _call_api(
                     )
                     tool_uses.append(_ToolUse(id=current_tool["id"], name=current_tool["name"], input=input_data))
                     current_tool = {}
+            elif event_type == "message_delta":
+                delta_usage: dict[str, Any] = data.get("usage", {})
+                for k, v in delta_usage.items():
+                    if isinstance(v, int):
+                        usage[k] = v
             elif event_type == "error":
                 error_data = data.get("error", {})
                 error_msg = error_data.get("message", str(data))
                 raise RuntimeError(f"Anthropic API stream error: {error_msg}")
 
-    # Cache stats
+    # Token stats
     cache_read = usage.get("cache_read_input_tokens", 0)
     cache_create = usage.get("cache_creation_input_tokens", 0)
     input_tokens = usage.get("input_tokens", 0)
     total_input = input_tokens + cache_read + cache_create
-    hit_rate = (cache_read / total_input * 100) if total_input else 0.0
-    if cache_read or cache_create:
-        logger.info(
-            "cache | input={} cache_read={} cache_create={} hit={:.0f}%",
-            input_tokens, cache_read, cache_create, hit_rate,
-        )
+    output_tokens = usage.get("output_tokens", 0)
 
     return {
         "text": "".join(text_parts),
         "tool_uses": tool_uses,
         "input_tokens": total_input,
+        "output_tokens": output_tokens,
         "cache_read": cache_read,
         "cache_create": cache_create,
-        "cache_hit_rate": hit_rate,
     }
 
 
@@ -198,7 +197,6 @@ class LLMClient:
         micro_ratio: float = 0.6,
         full_ratio: float = 0.8,
         max_compact_failures: int = 3,
-        cache_hit_warn: float = _DEFAULT_CACHE_HIT_WARN,
         group_timeline: GroupTimeline | None = None,
         memo_store: MemoStore | None = None,
         bot_self_id: str = "",
@@ -222,7 +220,6 @@ class LLMClient:
         self._micro_ratio = micro_ratio
         self._full_ratio = full_ratio
         self._max_compact_failures = max_compact_failures
-        self._cache_hit_warn = cache_hit_warn
         self._private_compact_failures: int = 0
         self._group_compact_failures: int = 0
         self._timeline = group_timeline
@@ -240,40 +237,6 @@ class LLMClient:
         return await _call_api(
             self._session, self._base_url, self._api_key, self._model,
             system_blocks, messages, max_tokens=max_tokens, tools=tools,
-        )
-
-    def _check_cache_rate(
-        self,
-        result: dict[str, Any],
-        *,
-        session_id: str,
-        user_id: str,
-        group_id: str | None,
-        msg_count: int,
-        tool_round: int,
-        had_compact: bool,
-    ) -> None:
-        """Emit a warning when cache hit rate drops below threshold."""
-        total = result["input_tokens"]
-        if total == 0:
-            return
-        hit_rate: float = result["cache_hit_rate"]
-        if hit_rate >= self._cache_hit_warn:
-            return
-        logger.warning(
-            "cache_rate_low | hit={:.0f}% session={} user={} group={} "
-            "input={} cache_read={} cache_create={} msg_count={} "
-            "tool_round={} had_compact={}",
-            hit_rate,
-            session_id,
-            user_id,
-            group_id,
-            result["input_tokens"],
-            result["cache_read"],
-            result["cache_create"],
-            msg_count,
-            tool_round,
-            had_compact,
         )
 
     # ------------------------------------------------------------------
@@ -352,7 +315,6 @@ class LLMClient:
         t0 = time.monotonic()
 
         is_group = group_id is not None and self._timeline is not None
-        had_compact = False
 
         if is_group:
             assert group_id is not None
@@ -360,20 +322,16 @@ class LLMClient:
             # Group: messages already added to timeline by group_listener
             if self._timeline.needs_compact(group_id, self._max_context_tokens, self._full_ratio):
                 await self._compact_group(group_id, identity)
-                had_compact = True
             elif self._timeline.needs_compact(group_id, self._max_context_tokens, self._micro_ratio):
                 self._micro_compact_group(group_id)
-                had_compact = True
             messages = self._build_group_messages(group_id)
         else:
             # Private: use ShortTermMemory
             self._short_term.add(session_id, "user", user_text)
             if self._short_term.needs_compact(session_id, self._max_context_tokens, self._full_ratio):
                 await self._compact(session_id)
-                had_compact = True
             elif self._short_term.needs_compact(session_id, self._max_context_tokens, self._micro_ratio):
                 self._micro_compact_private(session_id)
-                had_compact = True
             messages = self._build_private_messages(session_id)
 
         if self._memo_store:
@@ -395,16 +353,8 @@ class LLMClient:
         # pass_turn is always available
         tool_defs = [*(tool_defs or []), _PASS_TURN_TOOL]
 
-        cache_ctx = {
-            "session_id": session_id, "user_id": user_id,
-            "group_id": group_id, "had_compact": had_compact,
-        }
-
         for round_i in range(MAX_TOOL_ROUNDS):
             result = await self._call(system_blocks, messages, tools=tool_defs)
-            self._check_cache_rate(
-                result, **cache_ctx, msg_count=len(messages), tool_round=round_i,
-            )
             text: str = result["text"]
             tool_uses: list[_ToolUse] = result["tool_uses"]
 
@@ -472,9 +422,6 @@ class LLMClient:
 
         logger.warning("tool loop exhausted | session={} rounds={}", session_id, MAX_TOOL_ROUNDS)
         result = await self._call(system_blocks, messages)
-        self._check_cache_rate(
-            result, **cache_ctx, msg_count=len(messages), tool_round=MAX_TOOL_ROUNDS,
-        )
         reply = result["text"] or "..."
         segments = _split_segments(reply)
         if on_segment and len(segments) > 1:

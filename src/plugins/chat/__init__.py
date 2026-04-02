@@ -99,7 +99,6 @@ async def _init() -> None:
         micro_ratio=bot_config.compact.micro_ratio,
         full_ratio=bot_config.compact.full_ratio,
         max_compact_failures=bot_config.compact.max_failures,
-        cache_hit_warn=bot_config.compact.cache_hit_warn,
         group_timeline=_timeline,
         memo_store=memo_store,
         on_compact=lambda: _dream.notify_compact(),

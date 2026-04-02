@@ -79,7 +79,7 @@ def _fill_messages(short_term: ShortTermMemory, sid: str, count: int = 8) -> Non
         short_term.add(sid, "user" if i % 2 == 0 else "assistant", f"msg {i}")
 
 
-MOCK_RESULT = {"text": "summary", "tool_uses": [], "input_tokens": 100}
+MOCK_RESULT = {"text": "summary", "tool_uses": [], "input_tokens": 100, "output_tokens": 50, "cache_read": 0, "cache_create": 0}
 
 
 # ---------------------------------------------------------------------------
@@ -272,9 +272,9 @@ class TestPassTurn:
                 "text": "",
                 "tool_uses": [_ToolUse(id="tu_1", name="pass_turn", input={"reason": "not relevant"})],
                 "input_tokens": 100,
+                "output_tokens": 0,
                 "cache_read": 0,
                 "cache_create": 0,
-                "cache_hit_rate": 0.0,
             }
             with patch("src.llm.client._call_api", new_callable=AsyncMock, return_value=mock_result):
                 result = await client.chat(
