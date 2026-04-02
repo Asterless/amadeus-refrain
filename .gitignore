@@ -8,6 +8,7 @@ dist/
 config.toml
 storage/memories/
 storage/logs/
+storage/*.db
 !storage/.gitkeep
 !storage/memories/.example.qmd
 napcat/data/
