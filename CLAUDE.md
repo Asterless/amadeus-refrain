@@ -51,4 +51,4 @@ All tests must pass (`uv run pytest`) before committing code. Same for lint and 
 
 ## Language
 
-User-facing strings and identity configs are in Chinese. Everything else (code, comments, docstrings, log messages) in English.
+User-facing strings and identity configs are in Chinese. Everything else (code, comments, docstrings, log messages, commit messages) in English.
