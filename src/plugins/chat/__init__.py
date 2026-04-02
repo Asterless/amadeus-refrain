@@ -215,12 +215,14 @@ def _session_id(event: MessageEvent) -> str:
 
 
 _REPLY_PREVIEW_MAX = 50
+_REPLY_PREVIEW_MAX_SELF = 200  # longer preview when replying to bot's own message
 
 
 async def _render_message(
     msg: Message,
     reply: object | None = None,
     session: aiohttp.ClientSession | None = None,
+    self_id: str = "",
 ) -> Content:
     """将消息段转为文本或内容块列表。
 
@@ -235,19 +237,22 @@ async def _render_message(
         sender = getattr(reply, "sender", None)
         reply_msg = getattr(reply, "message", None)
         if sender and reply_msg:
-            uid = getattr(sender, "user_id", "") or ""
-            nick = getattr(sender, "nickname", "") or str(uid)
+            uid = str(getattr(sender, "user_id", "") or "")
+            nick = getattr(sender, "nickname", "") or uid
+            is_reply_to_bot = self_id and uid == self_id
+            cap = _REPLY_PREVIEW_MAX_SELF if is_reply_to_bot else _REPLY_PREVIEW_MAX
             original = reply_msg.extract_plain_text().strip()
-            if len(original) > _REPLY_PREVIEW_MAX:
-                original = original[:_REPLY_PREVIEW_MAX] + "…"
-            text_parts.append(f"[回复 {nick}({uid}): {original}] ")
+            if len(original) > cap:
+                original = original[:cap] + "…"
+            label = "回复 我" if is_reply_to_bot else f"回复 {nick}({uid})"
+            text_parts.append(f"[{label}: {original}] ")
 
     for seg in msg:
         if seg.type == "text":
             text_parts.append(seg.data.get("text", ""))
         elif seg.type == "at":
             qq = seg.data.get("qq", "")
-            text_parts.append(f"@{qq}")
+            text_parts.append("@我" if self_id and qq == self_id else f"@{qq}")
         elif seg.type == "face":
             face_id = seg.data.get("id", "")
             try:
@@ -297,7 +302,7 @@ async def collect_group_context(bot: Bot, event: GroupMessageEvent) -> None:
     # Skip bot's own messages — already added as role="assistant" by LLMClient
     if str(event.user_id) == bot.self_id:
         return
-    content = await _render_message(event.get_message(), reply=event.reply, session=_llm._session)
+    content = await _render_message(event.get_message(), reply=event.reply, session=_llm._session, self_id=bot.self_id)
     if not content:
         return
 
@@ -331,7 +336,9 @@ async def handle_private_chat(bot: Bot, event: MessageEvent) -> None:
         return
 
     reply_msg = getattr(event, "reply", None)
-    user_content = await _render_message(event.get_message(), reply=reply_msg, session=_llm._session)
+    user_content = await _render_message(
+        event.get_message(), reply=reply_msg, session=_llm._session, self_id=bot.self_id,
+    )
     if not user_content:
         return
 
