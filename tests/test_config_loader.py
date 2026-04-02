@@ -44,7 +44,7 @@ def test_load_defaults_without_file(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert cfg.group.debounce_seconds == 5.0
     assert cfg.group.batch_size == 10
     assert cfg.napcat.api_url == "http://localhost:29300"
-    assert cfg.superusers == set()
+    assert cfg.admins == {}
 
 
 def test_load_from_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -59,7 +59,9 @@ def test_load_from_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None
     _write_toml(
         toml_file,
         """
-superusers = ["123456", "789012"]
+[admins]
+"123456" = "管理员A"
+"789012" = "管理员B"
 
 [llm]
 base_url = "http://custom-llm:8080/v1"
@@ -103,7 +105,7 @@ api_url = "http://napcat:29300"
     assert cfg.group.debounce_seconds == 3.0
     assert cfg.group.batch_size == 5
     assert cfg.napcat.api_url == "http://napcat:29300"
-    assert cfg.superusers == {"123456", "789012"}
+    assert cfg.admins == {"123456": "管理员A", "789012": "管理员B"}
 
 
 def test_env_overrides_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

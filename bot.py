@@ -22,7 +22,7 @@ if args.llm_api_key:
 if args.llm_model:
     os.environ["_CLI_LLM_MODEL"] = args.llm_model
 
-from src.config_loader import load_config as _load_config
+from src.config_loader import load_config as _load_config  # noqa: E402
 
 _bot_config = _load_config(config_path=args.config)
 log_dir = Path(_bot_config.log.dir)
@@ -55,8 +55,8 @@ logger.info(
     _c.group.allowed_groups or "无限制",
 )
 logger.info(
-    "[Access] superusers={} private_whitelist={}",
-    _c.superusers or "无", _c.allowed_private_users or "无限制",
+    "[Access] admins={} private_whitelist={}",
+    _c.admins or "无", _c.allowed_private_users or "无限制",
 )
 logger.info(
     "[Dirs] soul={} memo={} log={}",

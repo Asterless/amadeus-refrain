@@ -58,7 +58,7 @@ async def _init() -> None:
     instruction = load_instruction(bot_config.soul.dir)
     short_term = _short_term
 
-    superusers = bot_config.superusers | driver.config.superusers
+    superusers = set(bot_config.admins.keys()) | driver.config.superusers
 
     tools = ToolRegistry()
     tools.register(RecallMemoTool(memo_store))
