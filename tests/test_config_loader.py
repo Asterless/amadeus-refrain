@@ -196,6 +196,13 @@ model = "auto-detected-model"
     assert cfg.llm.model == "auto-detected-model"
 
 
+def test_usage_config_defaults():
+    from src.config import UsageConfig
+    cfg = BotConfig()
+    assert cfg.llm.usage.enabled is True
+    assert cfg.llm.usage.slow_threshold_s == 60.0
+
+
 def test_memo_config_defaults() -> None:
     from src.config import CompactConfig, DreamConfig, MemoConfig
     m = MemoConfig()

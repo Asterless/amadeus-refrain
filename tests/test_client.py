@@ -1,5 +1,6 @@
 """Tests for LLMClient compact logic, circuit breaker, and micro compact."""
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, Mock, patch
@@ -9,6 +10,7 @@ import pytest
 from src.identity.models import Identity
 from src.llm.client import LLMClient, _ToolUse
 from src.llm.prompt import PromptBuilder
+from src.llm.usage import UsageTracker
 from src.memory.group_timeline import GroupTimeline
 from src.memory.memo_store import MemoStore
 from src.memory.short_term import ShortTermMemory
@@ -79,7 +81,16 @@ def _fill_messages(short_term: ShortTermMemory, sid: str, count: int = 8) -> Non
         short_term.add(sid, "user" if i % 2 == 0 else "assistant", f"msg {i}")
 
 
-MOCK_RESULT = {"text": "summary", "tool_uses": [], "input_tokens": 100}
+MOCK_RESULT = {"text": "summary", "tool_uses": [], "input_tokens": 100, "output_tokens": 50, "cache_read": 0, "cache_create": 0}
+
+MOCK_RESULT_FULL = {
+    "text": "reply text",
+    "tool_uses": [],
+    "input_tokens": 160,  # total = 100 + 50 + 10
+    "output_tokens": 200,
+    "cache_read": 50,
+    "cache_create": 10,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -272,9 +283,9 @@ class TestPassTurn:
                 "text": "",
                 "tool_uses": [_ToolUse(id="tu_1", name="pass_turn", input={"reason": "not relevant"})],
                 "input_tokens": 100,
+                "output_tokens": 0,
                 "cache_read": 0,
                 "cache_create": 0,
-                "cache_hit_rate": 0.0,
             }
             with patch("src.llm.client._call_api", new_callable=AsyncMock, return_value=mock_result):
                 result = await client.chat(
@@ -286,3 +297,49 @@ class TestPassTurn:
                     ctx=None,
                 )
             assert result is None
+
+
+# ---------------------------------------------------------------------------
+# UsageTracker integration
+# ---------------------------------------------------------------------------
+
+
+async def test_chat_records_usage(prompt, short_term, tools, tmp_path) -> None:
+    tracker = UsageTracker(db_path=str(tmp_path / "usage.db"))
+    await tracker.init()
+    try:
+        async for client in _client(prompt, short_term, tools):
+            client._usage_tracker = tracker
+            with patch("src.llm.client._call_api", new_callable=AsyncMock, return_value=MOCK_RESULT_FULL):
+                await client.chat(
+                    session_id="private_100", user_id="100",
+                    user_text="hello", identity=_IDENTITY,
+                )
+            await asyncio.sleep(0)
+        rows = await tracker.query_raw("SELECT * FROM llm_calls")
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["call_type"] == "chat"
+        assert row["user_id"] == "100"
+        assert row["output_tokens"] == 200
+        assert row["input_tokens"] == 100  # raw = total(160) - cache_read(50) - cache_create(10)
+        assert row["cache_read_tokens"] == 50
+    finally:
+        await tracker.close()
+
+
+async def test_compact_records_usage(prompt, short_term, tools, tmp_path) -> None:
+    tracker = UsageTracker(db_path=str(tmp_path / "usage.db"))
+    await tracker.init()
+    mock_result = {**MOCK_RESULT, "output_tokens": 80, "cache_read": 0, "cache_create": 0}
+    try:
+        async for client in _client(prompt, short_term, tools):
+            client._usage_tracker = tracker
+            _fill_messages(short_term, "private_100")
+            with patch("src.llm.client._call_api", new_callable=AsyncMock, return_value=mock_result):
+                await client._compact("private_100")
+            await asyncio.sleep(0)
+        rows = await tracker.query_raw("SELECT * FROM llm_calls WHERE call_type='compact'")
+        assert len(rows) == 1
+    finally:
+        await tracker.close()

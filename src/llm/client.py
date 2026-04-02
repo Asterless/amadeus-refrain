@@ -14,6 +14,7 @@ from loguru import logger
 
 from src.identity.models import Identity
 from src.llm.prompt import PromptBuilder
+from src.llm.usage import UsageTracker
 from src.memory.group_timeline import GroupTimeline
 from src.memory.memo_store import MemoStore
 from src.memory.short_term import ChatMessage, ShortTermMemory
@@ -24,7 +25,6 @@ MAX_TOOL_ROUNDS = 5
 _SEGMENT_SEP = "---"
 _SEGMENT_DELAY = 0.5  # seconds between segment sends
 _BLANK_LINE_RE = re.compile(r"\n{2,}")
-_DEFAULT_CACHE_HIT_WARN = 90.0  # percent — warn when hit rate drops below this
 
 
 def _clean_text(text: str) -> str:
@@ -158,30 +158,30 @@ async def _call_api(
                     )
                     tool_uses.append(_ToolUse(id=current_tool["id"], name=current_tool["name"], input=input_data))
                     current_tool = {}
+            elif event_type == "message_delta":
+                delta_usage: dict[str, Any] = data.get("usage", {})
+                for k, v in delta_usage.items():
+                    if isinstance(v, int):
+                        usage[k] = v
             elif event_type == "error":
                 error_data = data.get("error", {})
                 error_msg = error_data.get("message", str(data))
                 raise RuntimeError(f"Anthropic API stream error: {error_msg}")
 
-    # Cache stats
+    # Token stats
     cache_read = usage.get("cache_read_input_tokens", 0)
     cache_create = usage.get("cache_creation_input_tokens", 0)
     input_tokens = usage.get("input_tokens", 0)
     total_input = input_tokens + cache_read + cache_create
-    hit_rate = (cache_read / total_input * 100) if total_input else 0.0
-    if cache_read or cache_create:
-        logger.info(
-            "cache | input={} cache_read={} cache_create={} hit={:.0f}%",
-            input_tokens, cache_read, cache_create, hit_rate,
-        )
+    output_tokens = usage.get("output_tokens", 0)
 
     return {
         "text": "".join(text_parts),
         "tool_uses": tool_uses,
         "input_tokens": total_input,
+        "output_tokens": output_tokens,
         "cache_read": cache_read,
         "cache_create": cache_create,
-        "cache_hit_rate": hit_rate,
     }
 
 
@@ -198,7 +198,6 @@ class LLMClient:
         micro_ratio: float = 0.6,
         full_ratio: float = 0.8,
         max_compact_failures: int = 3,
-        cache_hit_warn: float = _DEFAULT_CACHE_HIT_WARN,
         group_timeline: GroupTimeline | None = None,
         memo_store: MemoStore | None = None,
         bot_self_id: str = "",
@@ -222,13 +221,13 @@ class LLMClient:
         self._micro_ratio = micro_ratio
         self._full_ratio = full_ratio
         self._max_compact_failures = max_compact_failures
-        self._cache_hit_warn = cache_hit_warn
         self._private_compact_failures: int = 0
         self._group_compact_failures: int = 0
         self._timeline = group_timeline
         self._memo_store = memo_store
         self._bot_self_id = bot_self_id
         self._on_compact = on_compact
+        self._usage_tracker: UsageTracker | None = None
 
     async def close(self) -> None:
         await self._session.close()
@@ -242,39 +241,36 @@ class LLMClient:
             system_blocks, messages, max_tokens=max_tokens, tools=tools,
         )
 
-    def _check_cache_rate(
+    def _record_usage(
         self,
-        result: dict[str, Any],
         *,
-        session_id: str,
+        call_type: str,
         user_id: str,
         group_id: str | None,
-        msg_count: int,
-        tool_round: int,
-        had_compact: bool,
+        input_tokens: int,
+        cache_read_tokens: int,
+        cache_create_tokens: int,
+        output_tokens: int,
+        tool_rounds: int,
+        elapsed_s: float,
+        error: str | None = None,
     ) -> None:
-        """Emit a warning when cache hit rate drops below threshold."""
-        total = result["input_tokens"]
-        if total == 0:
+        """Fire-and-forget usage recording."""
+        if not self._usage_tracker:
             return
-        hit_rate: float = result["cache_hit_rate"]
-        if hit_rate >= self._cache_hit_warn:
-            return
-        logger.warning(
-            "cache_rate_low | hit={:.0f}% session={} user={} group={} "
-            "input={} cache_read={} cache_create={} msg_count={} "
-            "tool_round={} had_compact={}",
-            hit_rate,
-            session_id,
-            user_id,
-            group_id,
-            result["input_tokens"],
-            result["cache_read"],
-            result["cache_create"],
-            msg_count,
-            tool_round,
-            had_compact,
-        )
+        asyncio.create_task(self._usage_tracker.record(  # noqa: RUF006
+            call_type=call_type,
+            user_id=user_id or None,
+            group_id=group_id,
+            model=self._model,
+            input_tokens=input_tokens,
+            cache_read_tokens=cache_read_tokens,
+            cache_create_tokens=cache_create_tokens,
+            output_tokens=output_tokens,
+            tool_rounds=tool_rounds,
+            elapsed_s=elapsed_s,
+            error=error,
+        ))
 
     # ------------------------------------------------------------------
     # Message building
@@ -352,7 +348,6 @@ class LLMClient:
         t0 = time.monotonic()
 
         is_group = group_id is not None and self._timeline is not None
-        had_compact = False
 
         if is_group:
             assert group_id is not None
@@ -360,20 +355,16 @@ class LLMClient:
             # Group: messages already added to timeline by group_listener
             if self._timeline.needs_compact(group_id, self._max_context_tokens, self._full_ratio):
                 await self._compact_group(group_id, identity)
-                had_compact = True
             elif self._timeline.needs_compact(group_id, self._max_context_tokens, self._micro_ratio):
                 self._micro_compact_group(group_id)
-                had_compact = True
             messages = self._build_group_messages(group_id)
         else:
             # Private: use ShortTermMemory
             self._short_term.add(session_id, "user", user_text)
             if self._short_term.needs_compact(session_id, self._max_context_tokens, self._full_ratio):
                 await self._compact(session_id)
-                had_compact = True
             elif self._short_term.needs_compact(session_id, self._max_context_tokens, self._micro_ratio):
                 self._micro_compact_private(session_id)
-                had_compact = True
             messages = self._build_private_messages(session_id)
 
         if self._memo_store:
@@ -395,16 +386,18 @@ class LLMClient:
         # pass_turn is always available
         tool_defs = [*(tool_defs or []), _PASS_TURN_TOOL]
 
-        cache_ctx = {
-            "session_id": session_id, "user_id": user_id,
-            "group_id": group_id, "had_compact": had_compact,
-        }
+        # Token accumulators across tool rounds
+        acc_input = 0
+        acc_output = 0
+        acc_cache_read = 0
+        acc_cache_create = 0
 
         for round_i in range(MAX_TOOL_ROUNDS):
             result = await self._call(system_blocks, messages, tools=tool_defs)
-            self._check_cache_rate(
-                result, **cache_ctx, msg_count=len(messages), tool_round=round_i,
-            )
+            acc_input += result["input_tokens"] - result.get("cache_read", 0) - result.get("cache_create", 0)
+            acc_output += result.get("output_tokens", 0)
+            acc_cache_read += result.get("cache_read", 0)
+            acc_cache_create += result.get("cache_create", 0)
             text: str = result["text"]
             tool_uses: list[_ToolUse] = result["tool_uses"]
 
@@ -416,6 +409,13 @@ class LLMClient:
                 logger.info("pass_turn | session={} reason={!r} elapsed={:.1f}s", session_id, reason, elapsed)
                 if is_group and group_id is not None and self._timeline is not None:
                     self._timeline.set_input_tokens(group_id, result["input_tokens"])
+                self._record_usage(
+                    call_type="proactive",
+                    user_id=user_id, group_id=group_id,
+                    input_tokens=acc_input, cache_read_tokens=acc_cache_read,
+                    cache_create_tokens=acc_cache_create, output_tokens=acc_output,
+                    tool_rounds=round_i, elapsed_s=elapsed,
+                )
                 return None
 
             if not tool_uses:
@@ -438,6 +438,13 @@ class LLMClient:
                 else:
                     self._short_term.add(session_id, "assistant", full_reply)
                     self._short_term.set_input_tokens(session_id, result["input_tokens"])
+                self._record_usage(
+                    call_type="proactive" if is_group else "chat",
+                    user_id=user_id, group_id=group_id,
+                    input_tokens=acc_input, cache_read_tokens=acc_cache_read,
+                    cache_create_tokens=acc_cache_create, output_tokens=acc_output,
+                    tool_rounds=round_i, elapsed_s=elapsed,
+                )
                 return last_seg
 
             for tu in tool_uses:
@@ -472,9 +479,10 @@ class LLMClient:
 
         logger.warning("tool loop exhausted | session={} rounds={}", session_id, MAX_TOOL_ROUNDS)
         result = await self._call(system_blocks, messages)
-        self._check_cache_rate(
-            result, **cache_ctx, msg_count=len(messages), tool_round=MAX_TOOL_ROUNDS,
-        )
+        acc_input += result["input_tokens"] - result.get("cache_read", 0) - result.get("cache_create", 0)
+        acc_output += result.get("output_tokens", 0)
+        acc_cache_read += result.get("cache_read", 0)
+        acc_cache_create += result.get("cache_create", 0)
         reply = result["text"] or "..."
         segments = _split_segments(reply)
         if on_segment and len(segments) > 1:
@@ -489,6 +497,14 @@ class LLMClient:
         else:
             self._short_term.add(session_id, "assistant", full_reply)
             self._short_term.set_input_tokens(session_id, result["input_tokens"])
+        elapsed = time.monotonic() - t0
+        self._record_usage(
+            call_type="proactive" if is_group else "chat",
+            user_id=user_id, group_id=group_id,
+            input_tokens=acc_input, cache_read_tokens=acc_cache_read,
+            cache_create_tokens=acc_cache_create, output_tokens=acc_output,
+            tool_rounds=MAX_TOOL_ROUNDS, elapsed_s=elapsed,
+        )
         return last_seg
 
     # ------------------------------------------------------------------
@@ -573,6 +589,14 @@ class LLMClient:
             result = await _call_api(
                 self._session, self._base_url, self._api_key, self._model,
                 system, compress_messages, max_tokens=1024,
+            )
+            self._record_usage(
+                call_type="compact", user_id="", group_id=None,
+                input_tokens=result["input_tokens"] - result.get("cache_read", 0) - result.get("cache_create", 0),
+                cache_read_tokens=result.get("cache_read", 0),
+                cache_create_tokens=result.get("cache_create", 0),
+                output_tokens=result.get("output_tokens", 0),
+                tool_rounds=0, elapsed_s=0.0,
             )
             raw_text = result["text"].strip()
 
@@ -678,6 +702,14 @@ class LLMClient:
             result = await _call_api(
                 self._session, self._base_url, self._api_key, self._model,
                 system, compress_messages, max_tokens=1024,
+            )
+            self._record_usage(
+                call_type="compact", user_id="", group_id=group_id,
+                input_tokens=result["input_tokens"] - result.get("cache_read", 0) - result.get("cache_create", 0),
+                cache_read_tokens=result.get("cache_read", 0),
+                cache_create_tokens=result.get("cache_create", 0),
+                output_tokens=result.get("output_tokens", 0),
+                tool_rounds=0, elapsed_s=0.0,
             )
             raw_text = result["text"].strip()
 

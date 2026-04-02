@@ -11,6 +11,7 @@ from src.llm.client import LLMClient
 from src.llm.dream import DreamAgent
 from src.llm.prompt import PromptBuilder, load_instruction
 from src.llm.scheduler import GroupChatScheduler
+from src.llm.usage import UsageTracker
 from src.memory.group_timeline import GroupTimeline
 from src.memory.history_loader import load_group_history
 from src.memory.memo_store import MemoStore
@@ -29,6 +30,7 @@ _llm: LLMClient
 _dream: DreamAgent
 _dream_enabled: bool = False
 _scheduler: GroupChatScheduler
+_usage_tracker: UsageTracker
 _identity_mgr: IdentityManager
 _timeline: GroupTimeline
 _short_term: ShortTermMemory
@@ -38,7 +40,7 @@ _allowed_private_users: set[int] = set()
 
 @driver.on_startup
 async def _init() -> None:
-    global _llm, _dream, _dream_enabled, _scheduler, _identity_mgr
+    global _llm, _dream, _dream_enabled, _scheduler, _identity_mgr, _usage_tracker
     global _timeline, _short_term, _allowed_groups, _allowed_private_users
 
     bot_config = load_config()
@@ -88,6 +90,10 @@ async def _init() -> None:
         group_max_chars=bot_config.memo.group_max_chars,
     )
 
+    _usage_tracker = UsageTracker(db_path="storage/usage.db")
+    if bot_config.llm.usage.enabled:
+        await _usage_tracker.init()
+
     _llm = LLMClient(
         base_url=bot_config.llm.base_url,
         api_key=bot_config.llm.api_key,
@@ -99,11 +105,20 @@ async def _init() -> None:
         micro_ratio=bot_config.compact.micro_ratio,
         full_ratio=bot_config.compact.full_ratio,
         max_compact_failures=bot_config.compact.max_failures,
-        cache_hit_warn=bot_config.compact.cache_hit_warn,
         group_timeline=_timeline,
         memo_store=memo_store,
         on_compact=lambda: _dream.notify_compact(),
     )
+    if bot_config.llm.usage.enabled:
+        _llm._usage_tracker = _usage_tracker
+
+    if bot_config.llm.usage.enabled:
+        import nonebot
+
+        from src.llm.usage_routes import create_usage_router
+
+        app = nonebot.get_app()
+        app.include_router(create_usage_router(_usage_tracker))
 
     _scheduler = GroupChatScheduler(
         llm=_llm,
@@ -118,6 +133,7 @@ async def _init() -> None:
 async def _shutdown() -> None:
     await _llm.close()
     await _scheduler.close()
+    await _usage_tracker.close()
 
 
 @driver.on_bot_connect
@@ -127,8 +143,25 @@ async def _on_connect(bot: Bot) -> None:
     # Rebuild static block now that we have the real bot_self_id
     _llm._prompt.build_static(_identity_mgr.resolve(), bot_self_id=bot.self_id)
     _scheduler.set_bot(bot)
+
+    # Wire usage alert: PM all admins
+    bot_config = load_config()
+    admin_ids = list(bot_config.admins.keys())
+    if admin_ids and bot_config.llm.usage.enabled:
+        async def _alert_admins(msg: str) -> None:
+            for admin_id in admin_ids:
+                try:
+                    await bot.send_private_msg(user_id=int(admin_id), message=msg)
+                except Exception:
+                    logger.warning("failed to send usage alert to admin {}", admin_id)
+
+        _usage_tracker.set_alert(
+            alert_fn=_alert_admins,
+            cache_hit_warn=bot_config.compact.cache_hit_warn,
+            slow_threshold_s=bot_config.llm.usage.slow_threshold_s,
+        )
+
     try:
-        bot_config = load_config()
         group_list: list[dict[str, object]] = await bot.get_group_list()
         group_ids = [str(g["group_id"]) for g in group_list]
         if _allowed_groups:
