@@ -1,6 +1,8 @@
 """群聊统一时间线：合并 GroupContext 与群组的 ShortTermMemory。"""
 
-from typing import Literal, TypedDict
+from typing import Any, Literal, TypedDict
+
+from src.memory.types import Content, ContentBlock, TextBlock
 
 _MAX_GROUPS = 200
 
@@ -8,7 +10,39 @@ _MAX_GROUPS = 200
 class TimelineMessage(TypedDict):
     role: Literal["user", "assistant"]
     speaker: str | None  # user → "昵称(QQ号)", assistant → None
-    content: str
+    content: Content
+
+
+def _merge_user_contents(batch: list[TimelineMessage]) -> Content:
+    """Merge consecutive user messages into a single content value.
+
+    Returns str if all messages are plain text (backward compatible).
+    Returns list[ContentBlock] if any message contains image blocks.
+    """
+    has_blocks = any(isinstance(m["content"], list) for m in batch)
+
+    if not has_blocks:
+        lines: list[str] = []
+        for m in batch:
+            assert isinstance(m["content"], str)
+            if m["speaker"] is not None:
+                lines.append(f"{m['speaker']}: {m['content']}")
+            else:
+                lines.append(m["content"])
+        return "\n".join(lines)
+
+    merged: list[ContentBlock] = []
+    for m in batch:
+        prefix = f"{m['speaker']}: " if m["speaker"] is not None else ""
+        if isinstance(m["content"], str):
+            merged.append(TextBlock(type="text", text=f"{prefix}{m['content']}"))
+        else:
+            for j, block in enumerate(m["content"]):
+                if j == 0 and block["type"] == "text" and prefix:
+                    merged.append(TextBlock(type="text", text=f"{prefix}{block['text']}"))
+                else:
+                    merged.append(block)
+    return merged
 
 
 class _GroupState:
@@ -50,7 +84,7 @@ class GroupTimeline:
         group_id: str,
         *,
         role: Literal["user", "assistant"],
-        content: str,
+        content: Content,
         speaker: str | None = None,
     ) -> None:
         """追加一条消息；超出上限时淘汰最旧的消息。"""
@@ -69,17 +103,13 @@ class GroupTimeline:
     # Anthropic 消息格式转换
     # ------------------------------------------------------------------
 
-    def to_anthropic_messages(self, group_id: str) -> list[dict[str, str]]:
-        """将时间线转为 Anthropic messages 格式。
-
-        连续的 user 消息合并为一个 block，格式为 "speaker: content\\n"（末尾不加换行）。
-        assistant 消息保持独立。
-        """
+    def to_anthropic_messages(self, group_id: str) -> list[dict[str, Any]]:
+        """将时间线转为 Anthropic messages 格式。"""
         messages = self.get_messages(group_id)
         if not messages:
             return []
 
-        result: list[dict[str, str]] = []
+        result: list[dict[str, Any]] = []
         i = 0
         while i < len(messages):
             msg = messages[i]
@@ -87,16 +117,11 @@ class GroupTimeline:
                 result.append({"role": "assistant", "content": msg["content"]})
                 i += 1
             else:
-                # 收集连续的 user 消息
-                lines: list[str] = []
+                user_batch: list[TimelineMessage] = []
                 while i < len(messages) and messages[i]["role"] == "user":
-                    m = messages[i]
-                    if m["speaker"] is not None:
-                        lines.append(f"{m['speaker']}: {m['content']}")
-                    else:
-                        lines.append(m["content"])
+                    user_batch.append(messages[i])
                     i += 1
-                result.append({"role": "user", "content": "\n".join(lines)})
+                result.append({"role": "user", "content": _merge_user_contents(user_batch)})
 
         return result
 
@@ -150,4 +175,3 @@ class GroupTimeline:
         if state is None:
             return
         state.messages = state.messages[count:]
-
