@@ -1,6 +1,7 @@
 """Tests for UsageTracker."""
 
-import asyncio
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -78,8 +79,6 @@ async def test_record_failure_does_not_raise(tracker: UsageTracker, tmp_path) ->
     )
 
 
-from datetime import datetime, timezone
-
 
 async def _insert_sample_data(tracker: UsageTracker) -> None:
     """Insert sample records for query tests."""
@@ -124,13 +123,11 @@ async def test_top_groups(tracker: UsageTracker) -> None:
 
 async def test_summary_month(tracker: UsageTracker) -> None:
     await _insert_sample_data(tracker)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     month_str = now.strftime("%Y-%m")
     summary = await tracker.summary_month(month_str)
     assert summary["total_calls"] == 5
 
-
-from unittest.mock import AsyncMock
 
 
 async def test_alert_on_slow_call(tracker: UsageTracker) -> None:
@@ -191,3 +188,42 @@ async def test_no_cache_alert_for_compact(tracker: UsageTracker) -> None:
         output_tokens=50, tool_rounds=0, elapsed_s=1.0,
     )
     alert_fn.assert_not_called()
+
+
+async def test_timeseries_hourly(tracker: UsageTracker) -> None:
+    """timeseries with bucket='hour' returns 24 buckets for a day."""
+    await _insert_sample_data(tracker)
+    now = datetime.now(UTC)
+    date_str = now.strftime("%Y-%m-%d")
+    rows = await tracker.timeseries(period="day", date=date_str)
+    assert len(rows) >= 1
+    row = rows[0]
+    for key in ("bucket", "calls", "input_tokens", "cache_read_tokens",
+                "cache_create_tokens", "output_tokens"):
+        assert key in row, f"missing key: {key}"
+    assert len(row["bucket"]) == 2
+
+
+async def test_timeseries_daily(tracker: UsageTracker) -> None:
+    """timeseries with period='month' returns daily buckets."""
+    await _insert_sample_data(tracker)
+    now = datetime.now(UTC)
+    month_str = now.strftime("%Y-%m")
+    rows = await tracker.timeseries(period="month", date=month_str)
+    assert len(rows) >= 1
+    row = rows[0]
+    for key in ("bucket", "calls", "input_tokens", "cache_read_tokens",
+                "cache_create_tokens", "output_tokens"):
+        assert key in row
+    assert len(row["bucket"]) == 2
+
+
+async def test_timeseries_week(tracker: UsageTracker) -> None:
+    """timeseries with period='week' returns daily buckets for 7 days."""
+    await _insert_sample_data(tracker)
+    now = datetime.now(UTC)
+    date_str = now.strftime("%Y-%m-%d")
+    rows = await tracker.timeseries(period="week", date=date_str)
+    assert len(rows) >= 1
+    row = rows[0]
+    assert "-" in row["bucket"]

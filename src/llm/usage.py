@@ -174,13 +174,18 @@ class UsageTracker:
             """
             SELECT
                 COUNT(*)        AS total_calls,
+                COALESCE(SUM(input_tokens), 0)        AS input_tokens,
+                COALESCE(SUM(cache_read_tokens), 0)    AS cache_read_tokens,
+                COALESCE(SUM(cache_create_tokens), 0)  AS cache_create_tokens,
                 COALESCE(SUM(input_tokens + cache_read_tokens + cache_create_tokens), 0) AS total_input_tokens,
-                COALESCE(SUM(output_tokens), 0) AS total_output_tokens,
-                COALESCE(SUM(CASE WHEN call_type='chat' THEN 1 ELSE 0 END), 0) AS chat_calls,
+                COALESCE(SUM(output_tokens), 0)        AS total_output_tokens,
+                COALESCE(SUM(CASE WHEN call_type='chat' THEN 1 ELSE 0 END), 0)      AS chat_calls,
                 COALESCE(SUM(CASE WHEN call_type='proactive' THEN 1 ELSE 0 END), 0) AS proactive_calls,
-                COALESCE(SUM(CASE WHEN call_type='compact' THEN 1 ELSE 0 END), 0) AS compact_calls,
-                COALESCE(SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END), 0) AS error_count,
-                COALESCE(AVG(elapsed_s), 0) AS avg_elapsed_s
+                COALESCE(SUM(CASE WHEN call_type='compact' THEN 1 ELSE 0 END), 0)   AS compact_calls,
+                COALESCE(SUM(CASE WHEN call_type='dream' THEN 1 ELSE 0 END), 0)     AS dream_calls,
+                COALESCE(SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END), 0)     AS error_count,
+                COALESCE(SUM(tool_rounds), 0) AS total_tool_rounds,
+                COALESCE(AVG(elapsed_s), 0)   AS avg_elapsed_s
             FROM llm_calls WHERE ts LIKE ?
             """,
             (ts_like,),
@@ -220,3 +225,57 @@ class UsageTracker:
             """,
             (f"-{days} days", limit),
         )
+
+    async def timeseries(
+        self,
+        *,
+        period: str,
+        date: str | None = None,
+        tz_offset_hours: float = 0.0,
+    ) -> list[dict[str, Any]]:
+        """Return token usage bucketed by time.
+
+        - period='day'   -> date='YYYY-MM-DD', hourly buckets (00-23)
+        - period='month' -> date='YYYY-MM',    daily buckets (01-31)
+        - period='week'  -> date='YYYY-MM-DD', daily buckets (MM-DD) for 7 days ending on date
+        """
+        tz_modifier = f"{tz_offset_hours:+.1f} hours"
+
+        if period == "day":
+            if date is None:
+                date = datetime.now(UTC).strftime("%Y-%m-%d")
+            bucket_expr = f"strftime('%H', ts, '{tz_modifier}')"
+            where_clause = f"date(ts, '{tz_modifier}') = ?"
+            params = (date,)
+        elif period == "month":
+            if date is None:
+                date = datetime.now(UTC).strftime("%Y-%m")
+            bucket_expr = f"strftime('%d', ts, '{tz_modifier}')"
+            where_clause = f"strftime('%Y-%m', ts, '{tz_modifier}') = ?"
+            params = (date,)
+        elif period == "week":
+            if date is None:
+                date = datetime.now(UTC).strftime("%Y-%m-%d")
+            bucket_expr = f"strftime('%m-%d', ts, '{tz_modifier}')"
+            where_clause = (
+                f"date(ts, '{tz_modifier}') > date(?, '-7 days') "
+                f"AND date(ts, '{tz_modifier}') <= ?"
+            )
+            params = (date, date)
+        else:
+            msg = f"unknown period: {period!r}"
+            raise ValueError(msg)
+
+        sql = f"""
+            SELECT {bucket_expr} AS bucket,
+                   COUNT(*)                                 AS calls,
+                   COALESCE(SUM(input_tokens), 0)           AS input_tokens,
+                   COALESCE(SUM(cache_read_tokens), 0)      AS cache_read_tokens,
+                   COALESCE(SUM(cache_create_tokens), 0)    AS cache_create_tokens,
+                   COALESCE(SUM(output_tokens), 0)          AS output_tokens
+            FROM llm_calls
+            WHERE {where_clause}
+            GROUP BY bucket
+            ORDER BY bucket
+        """
+        return await self.query_raw(sql, params)
