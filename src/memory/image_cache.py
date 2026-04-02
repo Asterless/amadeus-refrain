@@ -88,14 +88,8 @@ class ImageCache:
         """Resize image and save to disk as JPEG."""
         import pyvips
 
+        # pyvips loads only the first frame of animated GIFs by default
         img: Any = pyvips.Image.new_from_buffer(data, "")
-
-        # For animated images (GIF), extract first frame
-        if img.get_typeof("n-pages") != 0:
-            n_pages = img.get("n-pages")
-            if n_pages > 1:
-                page_height = img.height // n_pages
-                img = img.crop(0, 0, img.width, page_height)
 
         # Resize if needed
         max_side = max(img.width, img.height)
