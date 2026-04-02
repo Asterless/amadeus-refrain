@@ -238,10 +238,20 @@ class LLMClient:
             })
             messages.append({"role": "assistant", "content": "好的，我已了解之前的对话内容。"})
 
-        # 时间线消息（不加缓存断点：每次消息列表都变，断点漂移反而打破 cache；
-        # 稳定的缓存断点只放在 system blocks、tools 和上面的摘要上）
+        # 时间线消息
         history = self._timeline.to_anthropic_messages(group_id)
         messages.extend(history)
+
+        # 在上次 API 调用时记录的位置放 cache 断点：该位置之前的消息不变，前缀匹配 → cache hit
+        cached_idx = self._timeline.get_cached_msg_index(group_id)
+        if 0 < cached_idx < len(messages):
+            target = messages[cached_idx]
+            if isinstance(target.get("content"), str):
+                messages[cached_idx] = {"role": target["role"], "content": [_cached_text(target["content"])]}
+
+        # 存 second-to-last 供下次用（last 可能被新 user 消息合并，second-to-last 必定稳定）
+        if len(messages) >= 2:
+            self._timeline.set_cached_msg_index(group_id, len(messages) - 2)
 
         return messages
 

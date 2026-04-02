@@ -12,13 +12,14 @@ class TimelineMessage(TypedDict):
 
 
 class _GroupState:
-    __slots__ = ("_max", "last_input_tokens", "messages", "summary")
+    __slots__ = ("_max", "last_cached_msg_index", "last_input_tokens", "messages", "summary")
 
     def __init__(self, max_messages: int) -> None:
         self._max = max_messages
         self.messages: list[TimelineMessage] = []
         self.summary: str = ""
         self.last_input_tokens: int = 0
+        self.last_cached_msg_index: int = 0
 
 
 class GroupTimeline:
@@ -118,6 +119,17 @@ class GroupTimeline:
             return 0
         return self._store[group_id].last_input_tokens
 
+    def get_cached_msg_index(self, group_id: str) -> int:
+        """Return the Anthropic messages index cached by the previous API call."""
+        if group_id not in self._store:
+            return 0
+        return self._store[group_id].last_cached_msg_index
+
+    def set_cached_msg_index(self, group_id: str, index: int) -> None:
+        """Store which Anthropic messages index to use as cache breakpoint next call."""
+        state = self._get_or_create(group_id)
+        state.last_cached_msg_index = index
+
     def needs_compact(self, group_id: str, max_tokens: int, ratio: float) -> bool:
         """判断是否需要 compact：当前 input tokens 超过阈值。"""
         return self.get_input_tokens(group_id) > max_tokens * ratio
@@ -130,4 +142,5 @@ class GroupTimeline:
         state.messages = state.messages[split:]
         state.summary = new_summary
         state.last_input_tokens = 0
+        state.last_cached_msg_index = 0
 

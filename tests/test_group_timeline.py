@@ -123,3 +123,28 @@ def test_compact(group_timeline: GroupTimeline) -> None:
 
     assert group_timeline.get_summary("g1") == "前两条已压缩"
     assert group_timeline.get_input_tokens("g1") == 0
+
+
+# ---------------------------------------------------------------------------
+# test_cached_msg_index
+# ---------------------------------------------------------------------------
+
+
+def test_cached_msg_index_default(group_timeline: GroupTimeline) -> None:
+    """Default cached message index is 0."""
+    assert group_timeline.get_cached_msg_index("g1") == 0
+
+
+def test_cached_msg_index_set_and_get(group_timeline: GroupTimeline) -> None:
+    group_timeline.set_cached_msg_index("g1", 5)
+    assert group_timeline.get_cached_msg_index("g1") == 5
+
+
+def test_cached_msg_index_reset_on_compact(group_timeline: GroupTimeline) -> None:
+    """compact resets cached index so stale breakpoints don't persist."""
+    for i in range(4):
+        role = "assistant" if i % 2 else "user"
+        group_timeline.add("g1", role=role, content=f"msg{i}", speaker="A(1)" if role == "user" else None)
+    group_timeline.set_cached_msg_index("g1", 3)
+    group_timeline.compact("g1", split=2, new_summary="摘要")
+    assert group_timeline.get_cached_msg_index("g1") == 0
