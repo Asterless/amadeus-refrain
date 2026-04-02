@@ -276,7 +276,8 @@ async def _render_message(
             else:
                 text_parts.append("[图片]")
         elif seg.type == "image":
-            text_parts.append("[图片]")
+            summary = seg.data.get("summary", "").strip("[]") or "图片"
+            text_parts.append(f"[{summary}]")
 
     text = "".join(text_parts).strip()
 

@@ -110,17 +110,23 @@ def _resolve_image_refs(
             if not isinstance(block, dict) or block.get("type") != "image_ref":
                 new_content.append(block)
                 continue
+            cache_ctrl = block.get("cache_control")
             if (mi, bi) not in keep_set:
-                new_content.append({"type": "text", "text": "[图片]"})
+                fallback: dict[str, Any] = {"type": "text", "text": "[图片]"}
+                if cache_ctrl:
+                    fallback["cache_control"] = cache_ctrl
+                new_content.append(fallback)
                 continue
             resolved = image_cache.load_as_base64(block)
             if resolved is not None:
-                # Preserve cache_control if the original block had it
-                if "cache_control" in block:
-                    resolved = {**resolved, "cache_control": block["cache_control"]}
+                if cache_ctrl:
+                    resolved = {**resolved, "cache_control": cache_ctrl}
                 new_content.append(resolved)
             else:
-                new_content.append({"type": "text", "text": "[图片已过期]"})
+                fallback = {"type": "text", "text": "[图片已过期]"}
+                if cache_ctrl:
+                    fallback["cache_control"] = cache_ctrl
+                new_content.append(fallback)
         msg["content"] = new_content
 
     return messages
