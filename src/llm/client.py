@@ -347,7 +347,6 @@ class LLMClient:
         group_id: str | None = None,
         ctx: ToolContext | None = None,
         on_segment: Callable[[str], Awaitable[None]] | None = None,
-        allow_skip: bool = False,
     ) -> str | None:
         logger.info("chat | session={} user={} identity={} text={!r}", session_id, user_id, identity.id, user_text[:80])
         t0 = time.monotonic()
@@ -393,7 +392,7 @@ class LLMClient:
         tool_defs: list[dict[str, Any]] | None = None
         if not self._tools.empty:
             tool_defs = _to_anthropic_tools(self._tools.to_openai_tools())
-        # Always include pass_turn so tool list is stable across @bot / scheduler calls (cache)
+        # pass_turn is always available
         tool_defs = [*(tool_defs or []), _PASS_TURN_TOOL]
 
         cache_ctx = {
@@ -409,18 +408,15 @@ class LLMClient:
             text: str = result["text"]
             tool_uses: list[_ToolUse] = result["tool_uses"]
 
-            # Check for pass_turn (only honored when allow_skip=True)
+            # Check for pass_turn
             pass_turn = next((tu for tu in tool_uses if tu.name == "pass_turn"), None)
-            if pass_turn and allow_skip:
+            if pass_turn:
                 reason = pass_turn.input.get("reason", "")
                 elapsed = time.monotonic() - t0
                 logger.info("pass_turn | session={} reason={!r} elapsed={:.1f}s", session_id, reason, elapsed)
                 if is_group and group_id is not None and self._timeline is not None:
                     self._timeline.set_input_tokens(group_id, result["input_tokens"])
                 return None
-            # Filter out pass_turn so it doesn't enter the tool-execution loop
-            if pass_turn:
-                tool_uses = [tu for tu in tool_uses if tu.name != "pass_turn"]
 
             if not tool_uses:
                 reply = text or "..."
