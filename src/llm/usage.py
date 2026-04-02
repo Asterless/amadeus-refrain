@@ -137,11 +137,13 @@ class UsageTracker:
                  tool_rounds, elapsed_s, error),
             )
             await self._db.commit()
+            total_in = input_tokens + cache_read_tokens + cache_create_tokens
+            hit_pct = f"{cache_read_tokens / total_in * 100:.0f}%" if total_in > 0 else "n/a"
             logger.info(
-                "usage | type={} user={} group={} in={} out={} cache_r={} cache_w={} rounds={} {:.1f}s{}",
+                "usage | type={} user={} group={} in={} out={} cache_r={} cache_w={} hit={} rounds={} {:.1f}s{}",
                 call_type, user_id, group_id,
                 input_tokens, output_tokens, cache_read_tokens, cache_create_tokens,
-                tool_rounds, elapsed_s,
+                hit_pct, tool_rounds, elapsed_s,
                 f" error={error}" if error else "",
             )
             await self._check_alerts(
