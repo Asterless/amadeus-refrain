@@ -11,7 +11,7 @@ from typing import Any
 from rich.console import Console
 
 from src.llm.usage import UsageTracker
-from src.llm.usage_tui import _local_tz_offset_hours, render_dashboard
+from src.llm.usage_tui import _local_tz_offset_hours, render_cost_table, render_dashboard
 
 _DB_PATH = "storage/usage.db"
 
@@ -93,35 +93,53 @@ async def _run_tui(args: argparse.Namespace) -> None:
     try:
         tz_offset = _local_tz_offset_hours()
         period = args.tui_period
+        date: str | None = args.date
 
         if period == "day":
-            date = args.date or datetime.now(UTC).astimezone().strftime("%Y-%m-%d")
             ts = await tracker.timeseries(period="day", date=date, tz_offset_hours=tz_offset)
-            all_buckets = [f"{h:02d}" for h in range(24)]
-            title = f"Daily Usage: {date}"
-
-        elif period == "month":
-            date = args.date or datetime.now(UTC).astimezone().strftime("%Y-%m")
-            ts = await tracker.timeseries(period="month", date=date, tz_offset_hours=tz_offset)
-            year, month = map(int, date.split("-"))
-            num_days = calendar.monthrange(year, month)[1]
-            all_buckets = [f"{d:02d}" for d in range(1, num_days + 1)]
-            title = f"Monthly Usage: {date}"
+            if date:
+                all_buckets = [f"{h:02d}" for h in range(24)]
+                title = f"Daily Usage: {date}"
+            else:
+                now = datetime.now(UTC).astimezone()
+                cur = now.hour
+                all_buckets = [f"{(cur + 1 + i) % 24:02d}" for i in range(24)]
+                title = "Usage: Last 24 Hours"
 
         elif period == "week":
-            date = args.date or datetime.now(UTC).astimezone().strftime("%Y-%m-%d")
+            if not date:
+                date = datetime.now(UTC).astimezone().strftime("%Y-%m-%d")
             ts = await tracker.timeseries(period="week", date=date, tz_offset_hours=tz_offset)
             end = datetime.strptime(date, "%Y-%m-%d")
             all_buckets = [(end - timedelta(days=6 - i)).strftime("%m-%d") for i in range(7)]
-            title = f"Weekly Usage: ending {date}"
+            title = f"Usage: Last 7 Days (ending {date})"
+
+        elif period == "month":
+            ts = await tracker.timeseries(period="month", date=date, tz_offset_hours=tz_offset)
+            if date:
+                year, month = map(int, date.split("-"))
+                num_days = calendar.monthrange(year, month)[1]
+                all_buckets = [f"{d:02d}" for d in range(1, num_days + 1)]
+                title = f"Monthly Usage: {date}"
+            else:
+                now = datetime.now(UTC).astimezone()
+                all_buckets = [(now - timedelta(days=29 - i)).strftime("%m-%d") for i in range(30)]
+                title = "Usage: Last 30 Days"
 
         else:
             msg = f"unknown tui period: {period!r}"
             raise ValueError(msg)
 
+        model_data = await tracker.usage_by_model(
+            period=period, date=date, tz_offset_hours=tz_offset,
+        )
+
         summary = _summarize_timeseries(ts)
         dashboard = render_dashboard(title=title, summary=summary, timeseries=ts, all_buckets=all_buckets)
-        Console().print(dashboard)
+        console = Console()
+        console.print(dashboard)
+        if model_data:
+            console.print(render_cost_table(model_data))
     finally:
         await tracker.close()
 
@@ -168,14 +186,14 @@ def main() -> None:
     tui_p = sub.add_parser("tui", help="Rich TUI dashboard with charts")
     tui_sub = tui_p.add_subparsers(dest="tui_period", required=True)
 
-    day_p = tui_sub.add_parser("day", help="Daily view (by hour)")
-    day_p.add_argument("date", nargs="?", default=None, help="YYYY-MM-DD (default: today)")
+    day_p = tui_sub.add_parser("day", help="Last 24 hours (by hour)")
+    day_p.add_argument("date", nargs="?", default=None, help="YYYY-MM-DD (default: last 24h)")
 
-    month_tui = tui_sub.add_parser("month", help="Monthly view (by day)")
-    month_tui.add_argument("date", nargs="?", default=None, help="YYYY-MM (default: current)")
+    month_tui = tui_sub.add_parser("month", help="Last 30 days (by day)")
+    month_tui.add_argument("date", nargs="?", default=None, help="YYYY-MM (default: last 30 days)")
 
-    week_p = tui_sub.add_parser("week", help="Weekly view (by day)")
-    week_p.add_argument("date", nargs="?", default=None, help="YYYY-MM-DD end date (default: today)")
+    week_p = tui_sub.add_parser("week", help="Last 7 days (by day)")
+    week_p.add_argument("date", nargs="?", default=None, help="YYYY-MM-DD end date (default: last 7 days)")
 
     args = parser.parse_args()
     asyncio.run(_run(args))

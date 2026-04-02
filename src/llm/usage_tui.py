@@ -11,6 +11,7 @@ import shutil
 from datetime import UTC, datetime
 from typing import Any
 
+from rich.table import Table
 from rich.text import Text
 
 # ---------------------------------------------------------------------------
@@ -154,6 +155,7 @@ def render_bar_chart(
     chart_height: int = 15,
     chart_width: int = 0,
     bar_style: str = "green",
+    y_axis_width: int = 0,
 ) -> Text:
     """Render a vertical bar chart as a Rich Text object.
 
@@ -172,7 +174,8 @@ def render_bar_chart(
 
     # Y axis label width
     tick_labels = [_fmt_axis_label(t) for t in ticks]
-    y_axis_width = max(len(lbl) for lbl in tick_labels) + 1  # +1 for space
+    if y_axis_width <= 0:
+        y_axis_width = max(len(lbl) for lbl in tick_labels) + 1
 
     bar_area_width = chart_width - y_axis_width - 1  # -1 for axis line
     if bar_area_width < n:
@@ -258,6 +261,7 @@ def render_stacked_bar_chart(
     chart_width: int = 0,
     style_a: str = "cyan",
     style_b: str = "yellow",
+    y_axis_width: int = 0,
 ) -> Text:
     """Render a two-series stacked vertical bar chart.
 
@@ -277,7 +281,8 @@ def render_stacked_bar_chart(
     y_max = ticks[-1]
 
     tick_labels = [_fmt_axis_label(t) for t in ticks]
-    y_axis_width = max(len(lbl) for lbl in tick_labels) + 1
+    if y_axis_width <= 0:
+        y_axis_width = max(len(lbl) for lbl in tick_labels) + 1
 
     bar_area_width = chart_width - y_axis_width - 1
     if bar_area_width < n:
@@ -370,6 +375,7 @@ def render_line_chart(
     chart_width: int = 0,
     line_style: str = "magenta",
     warn_below: float | None = None,
+    y_axis_width: int = 0,
 ) -> Text:
     """Render a line chart with adaptive Y range.
 
@@ -402,7 +408,8 @@ def render_line_chart(
         y_range = 1.0
 
     tick_labels = [_fmt_axis_label(t) for t in ticks]
-    y_axis_width = max(len(lbl) for lbl in tick_labels) + 1
+    if y_axis_width <= 0:
+        y_axis_width = max(len(lbl) for lbl in tick_labels) + 1
 
     plot_area_width = chart_width - y_axis_width - 1
     if plot_area_width < n:
@@ -525,6 +532,132 @@ def _draw_line_segment(
 
 
 # ---------------------------------------------------------------------------
+# Cost breakdown
+# ---------------------------------------------------------------------------
+
+# Anthropic API pricing: (input, cache_read, cache_write, output) in $/MTok
+_PRICING: dict[str, tuple[float, float, float, float]] = {
+    "opus": (15.0, 1.50, 18.75, 75.0),
+    "sonnet": (3.0, 0.30, 3.75, 15.0),
+    "haiku": (0.80, 0.08, 1.00, 4.0),
+}
+
+
+def _match_pricing(model: str) -> tuple[float, float, float, float]:
+    """Match a model string to its pricing tier. Falls back to sonnet."""
+    model_lower = model.lower()
+    for tier, prices in _PRICING.items():
+        if tier in model_lower:
+            return prices
+    return _PRICING["sonnet"]
+
+
+def _compute_cost(
+    input_tokens: int,
+    cache_read_tokens: int,
+    cache_create_tokens: int,
+    output_tokens: int,
+    pricing: tuple[float, float, float, float],
+) -> float:
+    """Compute cost in USD from token counts and pricing rates."""
+    p_in, p_cr, p_cw, p_out = pricing
+    return (
+        input_tokens * p_in
+        + cache_read_tokens * p_cr
+        + cache_create_tokens * p_cw
+        + output_tokens * p_out
+    ) / 1_000_000
+
+
+def _fmt_cost(cost: float) -> str:
+    if cost >= 100:
+        return f"${cost:.2f}"
+    if cost >= 1:
+        return f"${cost:.3f}"
+    return f"${cost:.4f}"
+
+
+def _token_cell(tokens: int, rate: float) -> Text:
+    """Format a token count with its unit price as a two-line cell."""
+    t = Text()
+    t.append(_fmt_axis_label(float(tokens)))
+    t.append(f"\n@${rate}/MTok", style="dim")
+    return t
+
+
+def render_cost_table(model_usage: list[dict[str, Any]]) -> Table:
+    """Render a per-model cost breakdown table."""
+    table = Table(title="Cost Breakdown (USD)", show_edge=True, pad_edge=True)
+    table.add_column("Model", style="bold", min_width=12)
+    table.add_column("Calls", justify="right")
+    table.add_column("Input", justify="right")
+    table.add_column("Cache Read", justify="right")
+    table.add_column("Cache Write", justify="right")
+    table.add_column("Output", justify="right")
+    table.add_column("Cost", justify="right", style="bold green")
+
+    total_cost = 0.0
+    total_calls = 0
+
+    for row in model_usage:
+        model = row["model"]
+        calls = row["calls"]
+        inp = row["input_tokens"]
+        cr = row["cache_read_tokens"]
+        cw = row["cache_create_tokens"]
+        out = row["output_tokens"]
+        pricing = _match_pricing(model)
+        p_in, p_cr, p_cw, p_out = pricing
+        cost = _compute_cost(inp, cr, cw, out, pricing)
+        total_cost += cost
+        total_calls += calls
+
+        table.add_row(
+            model,
+            str(calls),
+            _token_cell(inp, p_in),
+            _token_cell(cr, p_cr),
+            _token_cell(cw, p_cw),
+            _token_cell(out, p_out),
+            _fmt_cost(cost),
+        )
+
+    table.add_section()
+    table.add_row(
+        "Total", str(total_calls),
+        "", "", "", "",
+        _fmt_cost(total_cost),
+        style="bold",
+    )
+
+    return table
+
+
+# ---------------------------------------------------------------------------
+# Y-axis width helpers (for cross-chart alignment)
+# ---------------------------------------------------------------------------
+
+
+def _y_width_for_bar(values: list[float]) -> int:
+    """Compute Y-axis label width for a bar chart's data."""
+    y_max = max(values) if values else 0.0
+    ticks = _nice_ticks(y_max)
+    return max(len(_fmt_axis_label(t)) for t in ticks) + 1
+
+
+def _y_width_for_line(values: list[float | None]) -> int:
+    """Compute Y-axis label width for a line chart's data."""
+    real = [v for v in values if v is not None]
+    if not real:
+        return 4
+    v_min, v_max = min(real), max(real)
+    span = v_max - v_min
+    pad = max(abs(v_min) * 0.1, 1.0) if span < 1e-12 else span * 0.1
+    ticks = _nice_range_ticks(v_min - pad, v_max + pad)
+    return max(len(_fmt_axis_label(t)) for t in ticks) + 1
+
+
+# ---------------------------------------------------------------------------
 # Dashboard composer
 # ---------------------------------------------------------------------------
 
@@ -603,6 +736,14 @@ def render_dashboard(
     )
     result.append(summary_text + "\n\n")
 
+    # Pre-compute max Y-axis width so all charts align vertically
+    stacked_totals = [i + o for i, o in zip(input_tokens, output_tokens, strict=True)]
+    y_width = max(
+        _y_width_for_bar(calls),
+        _y_width_for_bar(stacked_totals),
+        _y_width_for_line(cache_hit_pcts),
+    )
+
     # Chart 1: calls bar chart
     calls_chart = render_bar_chart(
         buckets=all_buckets,
@@ -611,6 +752,7 @@ def render_dashboard(
         chart_height=10,
         chart_width=chart_width,
         bar_style="green",
+        y_axis_width=y_width,
     )
     result.append_text(calls_chart)
     result.append("\n")
@@ -625,6 +767,7 @@ def render_dashboard(
         y_label="tokens",
         chart_height=10,
         chart_width=chart_width,
+        y_axis_width=y_width,
     )
     result.append_text(tokens_chart)
     result.append("\n")
@@ -637,6 +780,7 @@ def render_dashboard(
         chart_height=8,
         chart_width=chart_width,
         line_style="magenta",
+        y_axis_width=y_width,
     )
     result.append_text(cache_chart)
 

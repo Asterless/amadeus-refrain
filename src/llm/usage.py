@@ -233,6 +233,66 @@ class UsageTracker:
             (f"-{days} days", limit),
         )
 
+    @staticmethod
+    def _period_filter(
+        period: str, date: str | None, tz_modifier: str,
+    ) -> tuple[str, tuple[Any, ...]]:
+        """Build WHERE clause for a time period.
+
+        When *date* is None the filter uses a rolling window
+        (24 h / 30 d); when a date string is given it matches
+        the exact calendar day / month.
+        """
+        if period == "day":
+            if date is None:
+                return "ts >= datetime('now', '-24 hours')", ()
+            return f"date(ts, '{tz_modifier}') = ?", (date,)
+        if period == "month":
+            if date is None:
+                now_date = datetime.now(UTC).strftime("%Y-%m-%d")
+                return (
+                    f"date(ts, '{tz_modifier}') > date(?, '-30 days') "
+                    f"AND date(ts, '{tz_modifier}') <= ?",
+                    (now_date, now_date),
+                )
+            return f"strftime('%Y-%m', ts, '{tz_modifier}') = ?", (date,)
+        if period == "week":
+            if date is None:
+                date = datetime.now(UTC).strftime("%Y-%m-%d")
+            return (
+                f"date(ts, '{tz_modifier}') > date(?, '-7 days') "
+                f"AND date(ts, '{tz_modifier}') <= ?",
+                (date, date),
+            )
+        msg = f"unknown period: {period!r}"
+        raise ValueError(msg)
+
+    async def usage_by_model(
+        self,
+        *,
+        period: str,
+        date: str | None = None,
+        tz_offset_hours: float = 0.0,
+    ) -> list[dict[str, Any]]:
+        """Return per-model token sums for a time period."""
+        tz_modifier = f"{tz_offset_hours:+.1f} hours"
+        where_clause, params = self._period_filter(period, date, tz_modifier)
+
+        sql = f"""
+            SELECT model,
+                   COUNT(*)                                 AS calls,
+                   COALESCE(SUM(input_tokens), 0)           AS input_tokens,
+                   COALESCE(SUM(cache_read_tokens), 0)      AS cache_read_tokens,
+                   COALESCE(SUM(cache_create_tokens), 0)    AS cache_create_tokens,
+                   COALESCE(SUM(output_tokens), 0)          AS output_tokens
+            FROM llm_calls
+            WHERE {where_clause}
+            GROUP BY model
+            ORDER BY SUM(input_tokens + cache_read_tokens
+                         + cache_create_tokens + output_tokens) DESC
+        """
+        return await self.query_raw(sql, params)
+
     async def timeseries(
         self,
         *,
@@ -242,33 +302,23 @@ class UsageTracker:
     ) -> list[dict[str, Any]]:
         """Return token usage bucketed by time.
 
-        - period='day'   -> date='YYYY-MM-DD', hourly buckets (00-23)
-        - period='month' -> date='YYYY-MM',    daily buckets (01-31)
-        - period='week'  -> date='YYYY-MM-DD', daily buckets (MM-DD) for 7 days ending on date
+        When *date* is omitted the query uses a rolling window
+        (day → 24 h, week → 7 d, month → 30 d).
+        When *date* is given it matches the exact calendar period.
         """
         tz_modifier = f"{tz_offset_hours:+.1f} hours"
+        where_clause, params = self._period_filter(period, date, tz_modifier)
 
         if period == "day":
-            if date is None:
-                date = datetime.now(UTC).strftime("%Y-%m-%d")
             bucket_expr = f"strftime('%H', ts, '{tz_modifier}')"
-            where_clause = f"date(ts, '{tz_modifier}') = ?"
-            params = (date,)
         elif period == "month":
-            if date is None:
-                date = datetime.now(UTC).strftime("%Y-%m")
-            bucket_expr = f"strftime('%d', ts, '{tz_modifier}')"
-            where_clause = f"strftime('%Y-%m', ts, '{tz_modifier}') = ?"
-            params = (date,)
-        elif period == "week":
-            if date is None:
-                date = datetime.now(UTC).strftime("%Y-%m-%d")
-            bucket_expr = f"strftime('%m-%d', ts, '{tz_modifier}')"
-            where_clause = (
-                f"date(ts, '{tz_modifier}') > date(?, '-7 days') "
-                f"AND date(ts, '{tz_modifier}') <= ?"
+            # Rolling 30 d uses MM-DD; calendar month uses DD
+            bucket_expr = (
+                f"strftime('%m-%d', ts, '{tz_modifier}')" if date is None
+                else f"strftime('%d', ts, '{tz_modifier}')"
             )
-            params = (date, date)
+        elif period == "week":
+            bucket_expr = f"strftime('%m-%d', ts, '{tz_modifier}')"
         else:
             msg = f"unknown period: {period!r}"
             raise ValueError(msg)
