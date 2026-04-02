@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import pytest
+
+from src.llm.usage import UsageTracker
 from src.llm.usage_tui import (
+    _local_tz_offset_hours,
     _nice_ticks,
     render_bar_chart,
     render_dashboard,
@@ -165,3 +169,54 @@ def test_render_dashboard() -> None:
     assert "calls" in text
     assert "tokens" in text
     assert "cache hit" in text
+
+
+# ---------------------------------------------------------------------------
+# Integration test: real DB → timeseries → dashboard
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def tracker_with_data(tmp_path: object) -> UsageTracker:
+    t = UsageTracker(db_path=str(tmp_path / "usage.db"))  # type: ignore[operator]
+    await t.init()
+    for hour in range(24):
+        for _ in range(hour % 5 + 1):
+            await t.record(
+                call_type="chat",
+                user_id="111",
+                group_id=None,
+                model="test-model",
+                input_tokens=100 * (hour + 1),
+                cache_read_tokens=800 * (hour + 1),
+                cache_create_tokens=50 * (hour + 1),
+                output_tokens=200 * (hour + 1),
+                tool_rounds=0,
+                elapsed_s=1.0 + hour * 0.1,
+            )
+    return t
+
+
+async def test_full_day_dashboard(tracker_with_data: UsageTracker) -> None:
+    """Full integration: query timeseries and render dashboard."""
+    from datetime import UTC, datetime
+
+    date = datetime.now(UTC).strftime("%Y-%m-%d")
+    tz_offset = _local_tz_offset_hours()
+    ts = await tracker_with_data.timeseries(period="day", date=date, tz_offset_hours=tz_offset)
+    summary = await tracker_with_data.summary_today()
+    all_buckets = [f"{h:02d}" for h in range(24)]
+
+    dashboard = render_dashboard(
+        title=date,
+        summary=summary,
+        timeseries=ts,
+        all_buckets=all_buckets,
+        chart_width=80,
+    )
+    output = dashboard.plain
+    assert "calls" in output.lower()
+    assert "tokens" in output.lower()
+    assert "cache hit" in output.lower()
+    # Should have substantial content
+    assert output.count("\n") > 30
