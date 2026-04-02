@@ -1,4 +1,4 @@
-"""群聊统一调度器：debounce/batch 触发模型调用，@bot 抢占。"""
+"""群聊统一调度器：debounce/batch/@ 触发模型调用，统一队列。"""
 
 from __future__ import annotations
 
@@ -18,17 +18,17 @@ if TYPE_CHECKING:
 
 
 class _GroupSlot:
-    __slots__ = ("debounce_task", "interrupted", "msg_count", "running_task")
+    __slots__ = ("debounce_task", "msg_count", "pending_at", "running_task")
 
     def __init__(self) -> None:
         self.debounce_task: asyncio.Task[None] | None = None
         self.running_task: asyncio.Task[None] | None = None
         self.msg_count: int = 0
-        self.interrupted: bool = False
+        self.pending_at: bool = False
 
 
 class GroupChatScheduler:
-    """群聊调度器：debounce 触发模型调用，@bot 抢占。"""
+    """群聊统一调度器：debounce/batch/@触发模型调用。"""
 
     def __init__(
         self,
@@ -53,8 +53,8 @@ class GroupChatScheduler:
     # Public API
     # ------------------------------------------------------------------
 
-    def notify(self, group_id: str) -> None:
-        """Called on every non-@ group message. Manages debounce/batch."""
+    def notify(self, group_id: str, *, is_at: bool = False) -> None:
+        """Called on every group message. Manages debounce/batch."""
         identity = self._identity_mgr.resolve()
         if identity.proactive is None:
             return
@@ -62,16 +62,26 @@ class GroupChatScheduler:
         slot = self._slots.setdefault(group_id, _GroupSlot())
         slot.msg_count += 1
 
-        # If a chat() is running or @bot is being handled, don't schedule
-        if slot.interrupted or (slot.running_task and not slot.running_task.done()):
+        if is_at:
+            if slot.running_task and not slot.running_task.done():
+                slot.pending_at = True
+                logger.debug("scheduler | group={} @ queued (task running)", group_id)
+                return
+            # Cancel pending debounce and fire immediately
+            if slot.debounce_task and not slot.debounce_task.done():
+                slot.debounce_task.cancel()
+            logger.info("scheduler | group={} @ -> fire", group_id)
+            self._fire(group_id)
+            return
+
+        # Non-@ path: debounce / batch (unchanged)
+        if slot.running_task and not slot.running_task.done():
             logger.debug("scheduler | group={} busy, skip (msgs={})", group_id, slot.msg_count)
             return
 
-        # Cancel old debounce
         if slot.debounce_task and not slot.debounce_task.done():
             slot.debounce_task.cancel()
 
-        # Batch full -> fire immediately
         if slot.msg_count >= self._batch_size:
             logger.info("scheduler | group={} batch full ({} msgs) -> fire", group_id, slot.msg_count)
             self._fire(group_id)
@@ -89,31 +99,6 @@ class GroupChatScheduler:
             return
         logger.info("scheduler | group={} trigger (startup)", group_id)
         self._fire(group_id)
-
-    def interrupt(self, group_id: str) -> None:
-        """Called when @bot. Cancels debounce and running task for this group."""
-        slot = self._slots.get(group_id)
-        if not slot:
-            return
-
-        if slot.debounce_task and not slot.debounce_task.done():
-            slot.debounce_task.cancel()
-            slot.debounce_task = None
-            logger.debug("scheduler | group={} debounce cancelled by @bot", group_id)
-
-        if slot.running_task and not slot.running_task.done():
-            slot.running_task.cancel()
-            slot.running_task = None
-            logger.info("scheduler | group={} running task cancelled by @bot", group_id)
-
-        slot.msg_count = 0
-        slot.interrupted = True
-
-    def release(self, group_id: str) -> None:
-        """Called after @bot chat completes. Re-enables scheduler for this group."""
-        slot = self._slots.get(group_id)
-        if slot:
-            slot.interrupted = False
 
     async def close(self) -> None:
         """Cancel all pending tasks on shutdown."""
@@ -188,7 +173,6 @@ class GroupChatScheduler:
                 group_id=group_id,
                 ctx=ctx,
                 on_segment=on_segment if self._bot else None,
-                allow_skip=True,
             )
 
             if reply:
@@ -201,3 +185,6 @@ class GroupChatScheduler:
         finally:
             if slot:
                 slot.running_task = None
+                if slot.pending_at:
+                    slot.pending_at = False
+                    self._fire(group_id)

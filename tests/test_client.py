@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 
 from src.identity.models import Identity
-from src.llm.client import LLMClient
+from src.llm.client import LLMClient, _ToolUse
 from src.llm.prompt import PromptBuilder
 from src.memory.group_timeline import GroupTimeline
 from src.memory.memo_store import MemoStore
@@ -254,3 +254,35 @@ async def test_compact_calls_on_compact(prompt, short_term, tools) -> None:
         with patch("src.llm.client._call_api", new_callable=AsyncMock, return_value=MOCK_RESULT):
             await client._compact("private_100")
         callback.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# pass_turn behavior
+# ---------------------------------------------------------------------------
+
+
+class TestPassTurn:
+    async def test_pass_turn_returns_none(self, prompt, short_term, tools, timeline, memo_store) -> None:
+        """pass_turn is always honored — chat() returns None."""
+        async for client in _client(prompt, short_term, tools, timeline=timeline, memo_store=memo_store):
+            gid = "12345"
+            timeline.add(gid, role="user", content="hello", speaker="user(111)")
+
+            mock_result = {
+                "text": "",
+                "tool_uses": [_ToolUse(id="tu_1", name="pass_turn", input={"reason": "not relevant"})],
+                "input_tokens": 100,
+                "cache_read": 0,
+                "cache_create": 0,
+                "cache_hit_rate": 0.0,
+            }
+            with patch("src.llm.client._call_api", new_callable=AsyncMock, return_value=mock_result):
+                result = await client.chat(
+                    session_id="group_12345",
+                    user_id="111",
+                    user_text="hello",
+                    identity=_IDENTITY,
+                    group_id=gid,
+                    ctx=None,
+                )
+            assert result is None

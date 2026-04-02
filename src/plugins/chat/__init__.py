@@ -211,15 +211,12 @@ async def collect_group_context(bot: Bot, event: GroupMessageEvent) -> None:
         content=text,
     )
 
-    if event.is_tome():
-        return
-
-    _scheduler.notify(group_id)
+    _scheduler.notify(group_id, is_at=event.is_tome())
 
 
-# ── 对话 ──
+# ── 私聊 ──
 
-chat = on_message(rule=to_me(), priority=10, block=True)
+private_chat = on_message(rule=to_me(), priority=10, block=True)
 
 
 async def _dream_llm_call(system_prompt: str) -> None:
@@ -227,29 +224,21 @@ async def _dream_llm_call(system_prompt: str) -> None:
     logger.warning("dream LLM call is a STUB — dream consolidation is NOT running (prompt len={})", len(system_prompt))
 
 
-@chat.handle()
-async def handle_chat(bot: Bot, event: MessageEvent) -> None:
-    # 白名单过滤
+@private_chat.handle()
+async def handle_private_chat(bot: Bot, event: MessageEvent) -> None:
     if isinstance(event, GroupMessageEvent):
-        if _allowed_groups and event.group_id not in _allowed_groups:
-            return
-    else:
-        if _allowed_private_users and event.user_id not in _allowed_private_users:
-            return
+        return
+    if _allowed_private_users and event.user_id not in _allowed_private_users:
+        return
 
-    reply = getattr(event, "reply", None)
-    user_text = _render_message(event.get_message(), reply=reply)
+    reply_msg = getattr(event, "reply", None)
+    user_text = _render_message(event.get_message(), reply=reply_msg)
     if not user_text:
         return
 
     sid = _session_id(event)
-    group_id = str(event.group_id) if isinstance(event, GroupMessageEvent) else None
     identity = _identity_mgr.resolve()
-
-    if group_id:
-        _scheduler.interrupt(group_id)
-
-    ctx = ToolContext(bot=bot, user_id=str(event.user_id), group_id=group_id, session_id=sid)
+    ctx = ToolContext(bot=bot, user_id=str(event.user_id), group_id=None, session_id=sid)
 
     async def send_segment(text: str) -> None:
         await bot.send(event, Message(text))
@@ -260,20 +249,16 @@ async def handle_chat(bot: Bot, event: MessageEvent) -> None:
             user_id=str(event.user_id),
             user_text=user_text,
             identity=identity,
-            group_id=group_id,
+            group_id=None,
             ctx=ctx,
             on_segment=send_segment,
         )
     except Exception:
         logger.exception("chat error")
         reply = "出错了，请稍后再试"
-    finally:
-        if group_id:
-            _scheduler.release(group_id)
 
-    # Check if Dream should run (fire-and-forget, gated by config)
     if _dream_enabled:
         await _dream.maybe_run(_dream_llm_call)
 
     if reply:
-        await chat.finish(Message(reply))
+        await private_chat.finish(Message(reply))

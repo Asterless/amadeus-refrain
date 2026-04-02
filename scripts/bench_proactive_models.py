@@ -92,7 +92,7 @@ async def call_model(
     base_url: str,
     api_key: str,
     model: str,
-) -> tuple[float, str, dict | None]:
+) -> tuple[float, str, list[dict] | None]:
     """调用一次，返回 (耗时秒, 原始文本, 解析结果)。"""
     body = {
         "model": model,

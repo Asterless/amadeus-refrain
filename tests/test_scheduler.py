@@ -22,12 +22,15 @@ class _FakeIdentityMgr:
 class _FakeLLM:
     """Records chat() calls and returns configured reply."""
 
-    def __init__(self, reply: str | None = "你好") -> None:
+    def __init__(self, reply: str | None = "你好", *, delay: float = 0) -> None:
         self.calls: list[dict] = []
         self.reply = reply
+        self._delay = delay
 
     async def chat(self, **kwargs) -> str | None:  # type: ignore[override]
         self.calls.append(kwargs)
+        if self._delay:
+            await asyncio.sleep(self._delay)
         return self.reply
 
 
@@ -53,7 +56,6 @@ class TestNotify:
         scheduler.notify("g1")
         await asyncio.sleep(0.15)
         assert len(llm.calls) == 1
-        assert llm.calls[0]["allow_skip"] is True
         await scheduler.close()
 
     async def test_batch_size_fires_immediately(self) -> None:
@@ -86,28 +88,61 @@ class TestNotify:
         await scheduler.close()
 
 
-class TestInterrupt:
-    async def test_cancels_debounce(self) -> None:
-        """interrupt cancels pending debounce task."""
+class TestAtHandling:
+    async def test_at_fires_immediately(self) -> None:
+        """notify(is_at=True) fires immediately, skipping debounce."""
         llm = _FakeLLM(reply=None)
         scheduler = GroupChatScheduler(
             llm=llm, timeline=GroupTimeline(), identity_mgr=_FakeIdentityMgr(_make_identity()),  # type: ignore[arg-type]
             debounce_seconds=999, batch_size=100,
         )
-        scheduler.notify("g1")
-        assert scheduler._slots["g1"].debounce_task is not None
-        scheduler.interrupt("g1")
-        assert scheduler._slots["g1"].debounce_task is None or scheduler._slots["g1"].debounce_task.cancelled()
+        scheduler.notify("g1", is_at=True)
         await asyncio.sleep(0.1)
-        assert len(llm.calls) == 0  # debounce was cancelled, no chat call
+        assert len(llm.calls) == 1
         await scheduler.close()
 
-    async def test_interrupt_nonexistent_group(self) -> None:
-        """interrupt on unknown group is a no-op."""
+    async def test_at_cancels_pending_debounce(self) -> None:
+        """notify(is_at=True) cancels a pending debounce and fires immediately."""
+        llm = _FakeLLM(reply=None)
         scheduler = GroupChatScheduler(
-            llm=_FakeLLM(), timeline=GroupTimeline(), identity_mgr=_FakeIdentityMgr(_make_identity()),  # type: ignore[arg-type]
+            llm=llm, timeline=GroupTimeline(), identity_mgr=_FakeIdentityMgr(_make_identity()),  # type: ignore[arg-type]
+            debounce_seconds=999, batch_size=100,
         )
-        scheduler.interrupt("unknown")  # should not raise
+        scheduler.notify("g1")  # starts debounce
+        assert scheduler._slots["g1"].debounce_task is not None
+        scheduler.notify("g1", is_at=True)  # cancels debounce, fires immediately
+        await asyncio.sleep(0.1)
+        assert len(llm.calls) == 1
+        await scheduler.close()
+
+    async def test_at_queues_when_busy(self) -> None:
+        """notify(is_at=True) sets pending_at when a task is already running."""
+        llm = _FakeLLM(reply=None, delay=0.5)
+        scheduler = GroupChatScheduler(
+            llm=llm, timeline=GroupTimeline(), identity_mgr=_FakeIdentityMgr(_make_identity()),  # type: ignore[arg-type]
+            debounce_seconds=0.05, batch_size=100,
+        )
+        scheduler.notify("g1")  # debounce
+        await asyncio.sleep(0.15)  # fires, running_task active
+        assert len(llm.calls) == 1
+        scheduler.notify("g1", is_at=True)  # should queue
+        assert scheduler._slots["g1"].pending_at is True
+        await scheduler.close()
+
+    async def test_pending_at_fires_after_completion(self) -> None:
+        """After running task completes, pending_at triggers a new call."""
+        llm = _FakeLLM(reply=None, delay=0.2)
+        scheduler = GroupChatScheduler(
+            llm=llm, timeline=GroupTimeline(), identity_mgr=_FakeIdentityMgr(_make_identity()),  # type: ignore[arg-type]
+            debounce_seconds=0.05, batch_size=100,
+        )
+        scheduler.notify("g1")
+        await asyncio.sleep(0.15)  # first call fires (debounce done, chat starts)
+        assert len(llm.calls) == 1
+        scheduler.notify("g1", is_at=True)  # queued as pending_at
+        await asyncio.sleep(0.4)  # first call finishes, pending fires
+        assert len(llm.calls) == 2
+        assert scheduler._slots["g1"].pending_at is False
         await scheduler.close()
 
 
