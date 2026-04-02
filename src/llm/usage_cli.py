@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import calendar
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from rich.console import Console
+
 from src.llm.usage import UsageTracker
+from src.llm.usage_tui import _local_tz_offset_hours, render_dashboard
 
 _DB_PATH = "storage/usage.db"
 
@@ -19,16 +24,31 @@ def _fmt_tokens(n: int) -> str:
     return str(n)
 
 
+def _cache_hit_pct(data: dict[str, Any]) -> str:
+    total = data.get("total_input_tokens", 0)
+    if total == 0:
+        return "n/a"
+    return f"{data.get('cache_read_tokens', 0) / total * 100:.0f}%"
+
+
 def _print_summary(title: str, data: dict[str, Any]) -> None:
     print(f"\n=== {title} ===")
-    print(f"  Total calls:    {data.get('total_calls', 0)}")
-    print(f"  Input tokens:   {_fmt_tokens(data.get('total_input_tokens', 0))}")
-    print(f"  Output tokens:  {_fmt_tokens(data.get('total_output_tokens', 0))}")
-    print(f"  Chat calls:     {data.get('chat_calls', 0)}")
-    print(f"  Proactive:      {data.get('proactive_calls', 0)}")
-    print(f"  Compact:        {data.get('compact_calls', 0)}")
-    print(f"  Errors:         {data.get('error_count', 0)}")
-    print(f"  Avg latency:    {data.get('avg_elapsed_s', 0):.1f}s")
+    print(f"  Total calls:      {data.get('total_calls', 0)}")
+
+    print(f"  Input tokens:     {_fmt_tokens(data.get('total_input_tokens', 0))}")
+    print(f"    Non-cached:     {_fmt_tokens(data.get('input_tokens', 0))}")
+    print(f"    Cache read:     {_fmt_tokens(data.get('cache_read_tokens', 0))}")
+    print(f"    Cache create:   {_fmt_tokens(data.get('cache_create_tokens', 0))}")
+    print(f"  Cache hit rate:   {_cache_hit_pct(data)}")
+    print(f"  Output tokens:    {_fmt_tokens(data.get('total_output_tokens', 0))}")
+
+    print(f"  Chat calls:       {data.get('chat_calls', 0)}")
+    print(f"  Proactive:        {data.get('proactive_calls', 0)}")
+    print(f"  Compact:          {data.get('compact_calls', 0)}")
+    print(f"  Dream:            {data.get('dream_calls', 0)}")
+    print(f"  Tool rounds:      {data.get('total_tool_rounds', 0)}")
+    print(f"  Errors:           {data.get('error_count', 0)}")
+    print(f"  Avg latency:      {data.get('avg_elapsed_s', 0):.1f}s")
 
 
 def _print_top(title: str, rows: list[dict[str, Any]], id_key: str) -> None:
@@ -45,7 +65,72 @@ def _print_top(title: str, rows: list[dict[str, Any]], id_key: str) -> None:
         )
 
 
+def _summarize_timeseries(ts: list[dict[str, Any]]) -> dict[str, Any]:
+    """Derive summary stats directly from timeseries rows.
+
+    This avoids timezone mismatches between the summary query (UTC LIKE)
+    and the timeseries query (which applies a tz offset).
+    """
+    total_calls = sum(r["calls"] for r in ts)
+    input_tokens = sum(r["input_tokens"] for r in ts)
+    cache_read = sum(r["cache_read_tokens"] for r in ts)
+    cache_create = sum(r["cache_create_tokens"] for r in ts)
+    output_tokens = sum(r["output_tokens"] for r in ts)
+    return {
+        "total_calls": total_calls,
+        "input_tokens": input_tokens,
+        "cache_read_tokens": cache_read,
+        "cache_create_tokens": cache_create,
+        "total_input_tokens": input_tokens + cache_read + cache_create,
+        "total_output_tokens": output_tokens,
+        "avg_elapsed_s": 0.0,  # not available from timeseries
+    }
+
+
+async def _run_tui(args: argparse.Namespace) -> None:
+    tracker = UsageTracker(db_path=_DB_PATH)
+    await tracker.init()
+    try:
+        tz_offset = _local_tz_offset_hours()
+        period = args.tui_period
+
+        if period == "day":
+            date = args.date or datetime.now(UTC).astimezone().strftime("%Y-%m-%d")
+            ts = await tracker.timeseries(period="day", date=date, tz_offset_hours=tz_offset)
+            all_buckets = [f"{h:02d}" for h in range(24)]
+            title = f"Daily Usage: {date}"
+
+        elif period == "month":
+            date = args.date or datetime.now(UTC).astimezone().strftime("%Y-%m")
+            ts = await tracker.timeseries(period="month", date=date, tz_offset_hours=tz_offset)
+            year, month = map(int, date.split("-"))
+            num_days = calendar.monthrange(year, month)[1]
+            all_buckets = [f"{d:02d}" for d in range(1, num_days + 1)]
+            title = f"Monthly Usage: {date}"
+
+        elif period == "week":
+            date = args.date or datetime.now(UTC).astimezone().strftime("%Y-%m-%d")
+            ts = await tracker.timeseries(period="week", date=date, tz_offset_hours=tz_offset)
+            end = datetime.strptime(date, "%Y-%m-%d")
+            all_buckets = [(end - timedelta(days=6 - i)).strftime("%m-%d") for i in range(7)]
+            title = f"Weekly Usage: ending {date}"
+
+        else:
+            msg = f"unknown tui period: {period!r}"
+            raise ValueError(msg)
+
+        summary = _summarize_timeseries(ts)
+        dashboard = render_dashboard(title=title, summary=summary, timeseries=ts, all_buckets=all_buckets)
+        Console().print(dashboard)
+    finally:
+        await tracker.close()
+
+
 async def _run(args: argparse.Namespace) -> None:
+    if args.command == "tui":
+        await _run_tui(args)
+        return
+
     tracker = UsageTracker(db_path=_DB_PATH)
     await tracker.init()
     try:
@@ -79,6 +164,18 @@ def main() -> None:
 
     groups_p = sub.add_parser("top-groups", help="Top groups by token consumption")
     groups_p.add_argument("--days", type=int, default=7, help="Lookback days (default: 7)")
+
+    tui_p = sub.add_parser("tui", help="Rich TUI dashboard with charts")
+    tui_sub = tui_p.add_subparsers(dest="tui_period", required=True)
+
+    day_p = tui_sub.add_parser("day", help="Daily view (by hour)")
+    day_p.add_argument("date", nargs="?", default=None, help="YYYY-MM-DD (default: today)")
+
+    month_tui = tui_sub.add_parser("month", help="Monthly view (by day)")
+    month_tui.add_argument("date", nargs="?", default=None, help="YYYY-MM (default: current)")
+
+    week_p = tui_sub.add_parser("week", help="Weekly view (by day)")
+    week_p.add_argument("date", nargs="?", default=None, help="YYYY-MM-DD end date (default: today)")
 
     args = parser.parse_args()
     asyncio.run(_run(args))
