@@ -215,3 +215,21 @@ def test_to_anthropic_str_and_blocks_mixed(group_timeline: GroupTimeline) -> Non
     assert len(msgs) == 2
     assert isinstance(msgs[0]["content"], list)
     assert msgs[1]["content"] == "OK"
+
+
+def test_to_anthropic_image_only_message_has_speaker(group_timeline: GroupTimeline) -> None:
+    """Image-only messages (no text) should still get a speaker prefix."""
+    blocks: list[ContentBlock] = [
+        ImageRefBlock(type="image_ref", path="cache/img.jpg", media_type="image/jpeg"),
+    ]
+    group_timeline.add("g1", role="user", content=blocks, speaker="Alice(1)")
+
+    msgs = group_timeline.to_anthropic_messages("g1")
+    assert len(msgs) == 1
+    content = msgs[0]["content"]
+    assert isinstance(content, list)
+    # First block should be the speaker prefix
+    assert content[0]["type"] == "text"
+    assert "Alice(1)" in content[0]["text"]
+    # Second block is the image
+    assert content[1]["type"] == "image_ref"

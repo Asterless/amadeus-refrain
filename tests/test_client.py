@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 
 from src.identity.models import Identity
-from src.llm.client import LLMClient, _to_anthropic_message, _ToolUse
+from src.llm.client import LLMClient, _content_text, _resolve_image_refs, _to_anthropic_message, _ToolUse
 from src.llm.prompt import PromptBuilder
 from src.llm.usage import UsageTracker
 from src.memory.group_timeline import GroupTimeline
@@ -372,3 +372,104 @@ def test_to_anthropic_message_blocks() -> None:
     assert result["role"] == "user"
     assert isinstance(result["content"], list)
     assert len(result["content"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# _content_text
+# ---------------------------------------------------------------------------
+
+
+def test_content_text_str() -> None:
+    assert _content_text("hello") == "hello"
+
+
+def test_content_text_blocks() -> None:
+    blocks: list[ContentBlock] = [
+        TextBlock(type="text", text="看这个"),
+        ImageRefBlock(type="image_ref", path="x.jpg", media_type="image/jpeg"),
+        TextBlock(type="text", text="不错吧"),
+    ]
+    assert _content_text(blocks) == "看这个 不错吧"
+
+
+def test_content_text_empty_list() -> None:
+    assert _content_text([]) == ""
+
+
+# ---------------------------------------------------------------------------
+# _resolve_image_refs
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_image_refs_none_cache() -> None:
+    """With no image_cache, messages pass through unchanged."""
+    msgs = [{"role": "user", "content": [
+        {"type": "text", "text": "hi"},
+        {"type": "image_ref", "path": "x.jpg", "media_type": "image/jpeg"},
+    ]}]
+    result = _resolve_image_refs(msgs, None, 10)
+    assert result[0]["content"][1]["type"] == "image_ref"  # unchanged
+
+
+def test_resolve_image_refs_resolves_to_base64() -> None:
+    """image_ref blocks should be converted to base64 image blocks."""
+    mock_cache = Mock()
+    mock_cache.load_as_base64.return_value = {
+        "type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "abc123"},
+    }
+    msgs = [{"role": "user", "content": [
+        {"type": "text", "text": "看"},
+        {"type": "image_ref", "path": "x.jpg", "media_type": "image/jpeg"},
+    ]}]
+    result = _resolve_image_refs(msgs, mock_cache, 10)
+    assert result[0]["content"][1]["type"] == "image"
+    assert result[0]["content"][1]["source"]["data"] == "abc123"
+
+
+def test_resolve_image_refs_expired() -> None:
+    """Expired images (load returns None) become [图片已过期]."""
+    mock_cache = Mock()
+    mock_cache.load_as_base64.return_value = None
+    msgs = [{"role": "user", "content": [
+        {"type": "image_ref", "path": "gone.jpg", "media_type": "image/jpeg"},
+    ]}]
+    result = _resolve_image_refs(msgs, mock_cache, 10)
+    assert result[0]["content"][0]["type"] == "text"
+    assert "过期" in result[0]["content"][0]["text"]
+
+
+def test_resolve_image_refs_cap_oldest() -> None:
+    """Per-request cap replaces oldest images with [图片]."""
+    mock_cache = Mock()
+    mock_cache.load_as_base64.return_value = {
+        "type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "ok"},
+    }
+    msgs = [
+        {"role": "user", "content": [
+            {"type": "image_ref", "path": "old1.jpg", "media_type": "image/jpeg"},
+            {"type": "image_ref", "path": "old2.jpg", "media_type": "image/jpeg"},
+        ]},
+        {"role": "user", "content": [
+            {"type": "image_ref", "path": "new1.jpg", "media_type": "image/jpeg"},
+        ]},
+    ]
+    result = _resolve_image_refs(msgs, mock_cache, max_images=2)
+    # old1 should be replaced (oldest), old2+new1 kept
+    assert result[0]["content"][0]["type"] == "text"
+    assert result[0]["content"][0]["text"] == "[图片]"
+    assert result[0]["content"][1]["type"] == "image"  # old2 kept
+    assert result[1]["content"][0]["type"] == "image"  # new1 kept
+
+
+def test_resolve_image_refs_preserves_cache_control() -> None:
+    """cache_control on image_ref blocks should transfer to resolved blocks."""
+    mock_cache = Mock()
+    mock_cache.load_as_base64.return_value = {
+        "type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "x"},
+    }
+    msgs = [{"role": "user", "content": [
+        {"type": "image_ref", "path": "x.jpg", "media_type": "image/jpeg",
+         "cache_control": {"type": "ephemeral"}},
+    ]}]
+    result = _resolve_image_refs(msgs, mock_cache, 10)
+    assert result[0]["content"][0]["cache_control"] == {"type": "ephemeral"}

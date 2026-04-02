@@ -37,6 +37,9 @@ def _merge_user_contents(batch: list[TimelineMessage]) -> Content:
         if isinstance(m["content"], str):
             merged.append(TextBlock(type="text", text=f"{prefix}{m['content']}"))
         else:
+            # Insert speaker prefix: prepend to first text block, or add as own block
+            if prefix and (not m["content"] or m["content"][0]["type"] != "text"):
+                merged.append(TextBlock(type="text", text=prefix.rstrip()))
             for j, block in enumerate(m["content"]):
                 if j == 0 and block["type"] == "text" and prefix:
                     merged.append(TextBlock(type="text", text=f"{prefix}{block['text']}"))

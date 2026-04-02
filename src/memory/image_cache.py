@@ -43,6 +43,10 @@ class ImageCache:
 
         If file_id already exists on disk, returns existing ref (cache hit).
         """
+        if len(file_id) < 2:
+            logger.warning("image file_id too short | file_id={!r}", file_id)
+            return None
+
         path = self._path_for(file_id)
 
         # Cache hit — file already downloaded
@@ -50,11 +54,11 @@ class ImageCache:
             return ImageRefBlock(type="image_ref", path=str(path), media_type="image/jpeg")
 
         try:
-            resp = await session.get(url, timeout=_DOWNLOAD_TIMEOUT)
-            if resp.status != 200:
-                logger.warning("image download failed | url={} status={}", url, resp.status)
-                return None
-            data = await resp.read()
+            async with session.get(url, timeout=_DOWNLOAD_TIMEOUT) as resp:
+                if resp.status != 200:
+                    logger.warning("image download failed | url={} status={}", url, resp.status)
+                    return None
+                data = await resp.read()
         except Exception:
             logger.warning("image download error | url={}", url, exc_info=True)
             return None

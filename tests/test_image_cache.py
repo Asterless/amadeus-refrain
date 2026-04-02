@@ -4,7 +4,7 @@ import time
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -14,6 +14,20 @@ from src.memory.image_cache import ImageCache
 @pytest.fixture
 def cache(tmp_path: Path) -> ImageCache:
     return ImageCache(cache_dir=tmp_path, max_dimension=256)
+
+
+def _mock_session(resp: AsyncMock) -> Mock:
+    """Create a mock aiohttp session where .get() returns an async context manager.
+
+    aiohttp's session.get() is a sync call returning a _RequestContextManager,
+    which is an async context manager. We replicate that here.
+    """
+    cm = AsyncMock()
+    cm.__aenter__ = AsyncMock(return_value=resp)
+    cm.__aexit__ = AsyncMock(return_value=False)
+    session = Mock()
+    session.get = Mock(return_value=cm)
+    return session
 
 
 def _write_test_image(path: Path) -> None:
@@ -35,13 +49,10 @@ class TestSaveAndLoad:
         mock_resp = AsyncMock()
         mock_resp.read = AsyncMock(return_value=buf)
         mock_resp.status = 200
-        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
-        mock_resp.__aexit__ = AsyncMock(return_value=False)
 
-        mock_session = AsyncMock()
-        mock_session.get = AsyncMock(return_value=mock_resp)
+        session = _mock_session(mock_resp)
 
-        ref = await cache.save(mock_session, url="http://example.com/img.jpg", file_id="abc123def456")
+        ref = await cache.save(session, url="http://example.com/img.jpg", file_id="abc123def456")
 
         assert ref is not None
         assert ref["path"].endswith(".jpg")
@@ -54,13 +65,10 @@ class TestSaveAndLoad:
     async def test_save_returns_none_on_download_failure(self, cache: ImageCache) -> None:
         mock_resp = AsyncMock()
         mock_resp.status = 404
-        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
-        mock_resp.__aexit__ = AsyncMock(return_value=False)
 
-        mock_session = AsyncMock()
-        mock_session.get = AsyncMock(return_value=mock_resp)
+        session = _mock_session(mock_resp)
 
-        ref = await cache.save(mock_session, url="http://example.com/missing.jpg", file_id="deadbeef")
+        ref = await cache.save(session, url="http://example.com/missing.jpg", file_id="deadbeef")
         assert ref is None
 
     async def test_save_skips_if_cached(self, cache: ImageCache, tmp_path: Path) -> None:
@@ -106,13 +114,10 @@ class TestSaveAndLoad:
         mock_resp = AsyncMock()
         mock_resp.read = AsyncMock(return_value=buf)
         mock_resp.status = 200
-        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
-        mock_resp.__aexit__ = AsyncMock(return_value=False)
 
-        mock_session = AsyncMock()
-        mock_session.get = AsyncMock(return_value=mock_resp)
+        session = _mock_session(mock_resp)
 
-        ref = await cache.save(mock_session, url="http://example.com/big.jpg", file_id="bigimg001")
+        ref = await cache.save(session, url="http://example.com/big.jpg", file_id="bigimg001")
         assert ref is not None
 
         saved: Any = pyvips.Image.new_from_file(ref["path"])
