@@ -14,6 +14,7 @@ from loguru import logger
 
 from src.identity.models import Identity
 from src.llm.prompt import PromptBuilder
+from src.llm.usage import UsageTracker
 from src.memory.group_timeline import GroupTimeline
 from src.memory.memo_store import MemoStore
 from src.memory.short_term import ChatMessage, ShortTermMemory
@@ -226,6 +227,7 @@ class LLMClient:
         self._memo_store = memo_store
         self._bot_self_id = bot_self_id
         self._on_compact = on_compact
+        self._usage_tracker: UsageTracker | None = None
 
     async def close(self) -> None:
         await self._session.close()
@@ -238,6 +240,37 @@ class LLMClient:
             self._session, self._base_url, self._api_key, self._model,
             system_blocks, messages, max_tokens=max_tokens, tools=tools,
         )
+
+    def _record_usage(
+        self,
+        *,
+        call_type: str,
+        user_id: str,
+        group_id: str | None,
+        input_tokens: int,
+        cache_read_tokens: int,
+        cache_create_tokens: int,
+        output_tokens: int,
+        tool_rounds: int,
+        elapsed_s: float,
+        error: str | None = None,
+    ) -> None:
+        """Fire-and-forget usage recording."""
+        if not self._usage_tracker:
+            return
+        asyncio.create_task(self._usage_tracker.record(  # noqa: RUF006
+            call_type=call_type,
+            user_id=user_id or None,
+            group_id=group_id,
+            model=self._model,
+            input_tokens=input_tokens,
+            cache_read_tokens=cache_read_tokens,
+            cache_create_tokens=cache_create_tokens,
+            output_tokens=output_tokens,
+            tool_rounds=tool_rounds,
+            elapsed_s=elapsed_s,
+            error=error,
+        ))
 
     # ------------------------------------------------------------------
     # Message building
@@ -353,8 +386,18 @@ class LLMClient:
         # pass_turn is always available
         tool_defs = [*(tool_defs or []), _PASS_TURN_TOOL]
 
+        # Token accumulators across tool rounds
+        acc_input = 0
+        acc_output = 0
+        acc_cache_read = 0
+        acc_cache_create = 0
+
         for round_i in range(MAX_TOOL_ROUNDS):
             result = await self._call(system_blocks, messages, tools=tool_defs)
+            acc_input += result["input_tokens"] - result.get("cache_read", 0) - result.get("cache_create", 0)
+            acc_output += result.get("output_tokens", 0)
+            acc_cache_read += result.get("cache_read", 0)
+            acc_cache_create += result.get("cache_create", 0)
             text: str = result["text"]
             tool_uses: list[_ToolUse] = result["tool_uses"]
 
@@ -366,6 +409,13 @@ class LLMClient:
                 logger.info("pass_turn | session={} reason={!r} elapsed={:.1f}s", session_id, reason, elapsed)
                 if is_group and group_id is not None and self._timeline is not None:
                     self._timeline.set_input_tokens(group_id, result["input_tokens"])
+                self._record_usage(
+                    call_type="proactive",
+                    user_id=user_id, group_id=group_id,
+                    input_tokens=acc_input, cache_read_tokens=acc_cache_read,
+                    cache_create_tokens=acc_cache_create, output_tokens=acc_output,
+                    tool_rounds=round_i, elapsed_s=elapsed,
+                )
                 return None
 
             if not tool_uses:
@@ -388,6 +438,13 @@ class LLMClient:
                 else:
                     self._short_term.add(session_id, "assistant", full_reply)
                     self._short_term.set_input_tokens(session_id, result["input_tokens"])
+                self._record_usage(
+                    call_type="proactive" if is_group else "chat",
+                    user_id=user_id, group_id=group_id,
+                    input_tokens=acc_input, cache_read_tokens=acc_cache_read,
+                    cache_create_tokens=acc_cache_create, output_tokens=acc_output,
+                    tool_rounds=round_i, elapsed_s=elapsed,
+                )
                 return last_seg
 
             for tu in tool_uses:
@@ -422,6 +479,10 @@ class LLMClient:
 
         logger.warning("tool loop exhausted | session={} rounds={}", session_id, MAX_TOOL_ROUNDS)
         result = await self._call(system_blocks, messages)
+        acc_input += result["input_tokens"] - result.get("cache_read", 0) - result.get("cache_create", 0)
+        acc_output += result.get("output_tokens", 0)
+        acc_cache_read += result.get("cache_read", 0)
+        acc_cache_create += result.get("cache_create", 0)
         reply = result["text"] or "..."
         segments = _split_segments(reply)
         if on_segment and len(segments) > 1:
@@ -436,6 +497,14 @@ class LLMClient:
         else:
             self._short_term.add(session_id, "assistant", full_reply)
             self._short_term.set_input_tokens(session_id, result["input_tokens"])
+        elapsed = time.monotonic() - t0
+        self._record_usage(
+            call_type="proactive" if is_group else "chat",
+            user_id=user_id, group_id=group_id,
+            input_tokens=acc_input, cache_read_tokens=acc_cache_read,
+            cache_create_tokens=acc_cache_create, output_tokens=acc_output,
+            tool_rounds=MAX_TOOL_ROUNDS, elapsed_s=elapsed,
+        )
         return last_seg
 
     # ------------------------------------------------------------------
@@ -520,6 +589,14 @@ class LLMClient:
             result = await _call_api(
                 self._session, self._base_url, self._api_key, self._model,
                 system, compress_messages, max_tokens=1024,
+            )
+            self._record_usage(
+                call_type="compact", user_id="", group_id=None,
+                input_tokens=result["input_tokens"] - result.get("cache_read", 0) - result.get("cache_create", 0),
+                cache_read_tokens=result.get("cache_read", 0),
+                cache_create_tokens=result.get("cache_create", 0),
+                output_tokens=result.get("output_tokens", 0),
+                tool_rounds=0, elapsed_s=0.0,
             )
             raw_text = result["text"].strip()
 
@@ -625,6 +702,14 @@ class LLMClient:
             result = await _call_api(
                 self._session, self._base_url, self._api_key, self._model,
                 system, compress_messages, max_tokens=1024,
+            )
+            self._record_usage(
+                call_type="compact", user_id="", group_id=group_id,
+                input_tokens=result["input_tokens"] - result.get("cache_read", 0) - result.get("cache_create", 0),
+                cache_read_tokens=result.get("cache_read", 0),
+                cache_create_tokens=result.get("cache_create", 0),
+                output_tokens=result.get("output_tokens", 0),
+                tool_rounds=0, elapsed_s=0.0,
             )
             raw_text = result["text"].strip()
 
