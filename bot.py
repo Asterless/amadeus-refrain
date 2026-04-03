@@ -66,7 +66,31 @@ logger.info(
 logger.info("[NapCat] api_url={}", _c.napcat.api_url)
 logger.info("==================================")
 
-nonebot.init(log_level="SUCCESS")
+nonebot.init()
+
+# Suppress NoneBot per-message matcher noise while keeping our own INFO logs.
+# Replace NoneBot's stderr handler with one that filters matcher handled/complete.
+import nonebot.log as _nlog  # noqa: E402
+
+_MATCHER_NOISE = ("Event will be handled by", "running complete")
+
+
+def _quiet_filter(record: dict) -> bool:  # type: ignore[type-arg]
+    if not _nlog.default_filter(record):
+        return False
+    name = record.get("name") or ""
+    return not (name.startswith("nonebot") and any(s in record["message"] for s in _MATCHER_NOISE))
+
+
+if hasattr(_nlog, "logger_id"):
+    logger.remove(_nlog.logger_id)
+    _nlog.logger_id = logger.add(
+        __import__("sys").stderr,
+        level=0,
+        diagnose=False,
+        filter=_quiet_filter,
+        format=_nlog.default_format,
+    )
 
 driver = nonebot.get_driver()
 driver.register_adapter(OneBotV11Adapter)
