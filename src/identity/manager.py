@@ -5,7 +5,7 @@ Markdown 格式：
 
     人设描述正文...
 
-    ## proactive
+    ## 插话方式
     （可选）主动插话判断规则，支持多行。
 """
 
@@ -17,7 +17,7 @@ import aiofiles
 from src.identity.models import Identity
 
 _TITLE_RE = re.compile(r"^#\s+(.+)$", re.MULTILINE)
-_PROACTIVE_RE = re.compile(r"^##\s+proactive\s*$", re.MULTILINE | re.IGNORECASE)
+_PROACTIVE_RE = re.compile(r"^##\s+插话方式\s*$", re.MULTILINE)
 
 
 def _parse_identity(text: str) -> Identity | None:

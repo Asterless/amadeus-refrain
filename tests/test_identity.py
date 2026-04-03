@@ -23,7 +23,7 @@ def test_parse_identity_with_proactive() -> None:
 
 Bot 人设描述。
 
-## proactive
+## 插话方式
 
 有人求助时插话。
 用 JSON 回答。
@@ -32,7 +32,7 @@ Bot 人设描述。
     assert identity is not None
     assert identity.name == "Bot"
     assert "Bot 人设描述" in identity.personality
-    assert "proactive" not in identity.personality
+    assert "插话方式" not in identity.personality
     assert identity.proactive == "有人求助时插话。\n用 JSON 回答。"
 
 
