@@ -133,6 +133,7 @@ async def _init() -> None:
         max_rounds=bot_config.dream.max_rounds,
         user_max_chars=bot_config.memo.user_max_chars,
         group_max_chars=bot_config.memo.group_max_chars,
+        sticker_store=_sticker_store,
     )
 
     _usage_tracker = UsageTracker(db_path="storage/usage.db")
@@ -222,6 +223,7 @@ async def _on_connect(bot: Bot) -> None:
             count=bot_config.group.history_load_count,
             bot_self_id=bot.self_id,
             image_cache=_image_cache if _vision_enabled else None,
+            sticker_store=_sticker_store,
         )
     except Exception:
         logger.exception("failed to load group history")
