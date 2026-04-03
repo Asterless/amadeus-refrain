@@ -102,7 +102,8 @@ The bot must only call `save_sticker` when it:
 **Purpose:** Send a sticker as a separate image message.
 
 **Input:**
-- `sticker_id` (string) — ID from the index (e.g. `stk_a1b2c3d4`)
+- `sticker_id` (string) — ID from the index (e.g. `stk_a1b2c3d4`,
+  corresponding to `[表情包:stk_a1b2c3d4]` in the prompt)
 
 **Execution:**
 1. Validate `sticker_id` exists in index.
@@ -151,11 +152,11 @@ one-line-per-sticker format to minimize token usage:
 
 ```
 当前表情包库：
-<stk:a1b2c3d4> 一只猫咪露出嫌弃的表情 | 对方说了无语的话时
-<stk:e5f6g7h8> 熊猫头竖中指 | 阴阳怪气回怼时
+[表情包:stk_a1b2c3d4] 一只猫咪露出嫌弃的表情 | 对方说了无语的话时
+[表情包:stk_e5f6g7h8] 熊猫头竖中指 | 阴阳怪气回怼时
 ```
 
-Format: `<stk:hash> description | usage_hint`
+Format: `[表情包:stk_hash] description | usage_hint`
 
 When the library is empty: inject `当前表情包库为空`.
 
@@ -188,6 +189,33 @@ Add sticker maintenance instructions to Dream's system prompt:
 
 No hard LRU threshold — the Dream LLM decides what to cull based on library
 size, usage patterns, and sticker quality.
+
+---
+
+## History Reload: Sticker Recognition
+
+When the bot restarts, `history_loader.py` pulls recent group messages from
+NapCat. Images in those messages (including stickers the bot previously sent)
+are currently downloaded as regular `ImageRefBlock` entries. Without special
+handling, the bot would:
+
+- Re-download its own stickers into `image_cache` (duplicate storage)
+- See them as unknown images and potentially attempt to `save_sticker` again
+  (hash dedup prevents actual duplication, but wastes a tool call)
+
+**Fix:** In `_extract_content()`, after downloading an image, compute its
+content hash and check against the sticker index. If it matches a known
+sticker, emit `[表情包:stk_hash]` as plain text instead of an `ImageRefBlock`.
+
+This way the LLM sees history like:
+
+```
+assistant: 哈哈太搞笑了
+assistant: [表情包:stk_a1b2c3d4]
+```
+
+and recognizes these as stickers from its own library, not new images to
+evaluate.
 
 ---
 
