@@ -120,9 +120,33 @@ the conversation flow. No user trigger required.
 
 ## System Prompt Injection
 
+### Cache Impact Analysis
+
+Current cache layout (4 breakpoints, all used):
+
+```
+① tools[-1]                    — global shared
+② system block 1: personality  — global shared, built at startup
+③ system block 2: index+memo   — per-entity, built per chat()
+④ messages[near-end]           — per-conversation
+```
+
+The sticker index is injected into **block ③** (entity block, inside
+`PromptBuilder.build_blocks()`). This is the only viable position — block ②
+is a startup-time static block, and all 4 breakpoints are already occupied.
+
+**Critical:** The injected view includes ONLY stable fields (`id`,
+`description`, `usage_hint`). Volatile fields (`send_count`, `last_sent`,
+`created_at`) are **excluded** from the prompt. This ensures:
+
+- `send_sticker` calls do NOT change the prompt → block ③ stays cached
+- `save_sticker` (rare, adds a new entry) → block ③ misses once, re-caches
+- Dream cleanup (periodic, off-conversation) → no impact during chat
+- Block ② is completely unaffected
+
 ### Index View
 
-Injected as a dedicated system block after tool descriptions. Compact
+Injected at the end of entity block text in `build_blocks()`. Compact
 one-line-per-sticker format to minimize token usage:
 
 ```
