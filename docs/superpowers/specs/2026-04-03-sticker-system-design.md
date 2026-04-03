@@ -205,17 +205,14 @@ handling, the bot would:
 
 **Fix:** In `_extract_content()`, after downloading an image, compute its
 content hash and check against the sticker index. If it matches a known
-sticker, emit `[表情包:stk_hash]` as plain text instead of an `ImageRefBlock`.
+sticker, skip the `image_cache` copy and create an `ImageRefBlock` pointing
+directly to the existing file in `storage/stickers/stk_{hash}.{ext}`.
 
-This way the LLM sees history like:
-
-```
-assistant: 哈哈太搞笑了
-assistant: [表情包:stk_a1b2c3d4]
-```
-
-and recognizes these as stickers from its own library, not new images to
-evaluate.
+This way:
+- No duplicate storage (reuses the sticker file already on disk)
+- LLM sees the actual image in context (full visual understanding preserved)
+- LLM can cross-reference with the sticker index in system prompt to
+  recognize it as a known sticker from its library
 
 ---
 
