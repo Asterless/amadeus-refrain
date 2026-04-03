@@ -24,6 +24,7 @@ from src.tools.context import ToolContext
 from src.tools.registry import ToolRegistry
 
 MAX_TOOL_ROUNDS = 5
+_MAX_COMPACT_TOOL_ROUNDS = 3
 _RATE_LIMIT_MAX_RETRIES = 3
 _RATE_LIMIT_BASE_DELAY = 5.0  # seconds
 _SEGMENT_SEP = "---cut---"
@@ -161,6 +162,25 @@ _PASS_TURN_TOOL: dict[str, Any] = {
             }
         },
         "required": ["reason"],
+    },
+}
+
+_COMPACT_MEMO_TOOL: dict[str, Any] = {
+    "name": "append_memo",
+    "description": "向用户或群组的备忘录追加新观察。不要重复已有内容，只记新信息。",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "id": {
+                "type": "string",
+                "description": "目标 memo ID，如 user_QQ号 或 group_群号",
+            },
+            "note": {
+                "type": "string",
+                "description": "要追加的新观察（简短结论，不是流水账）",
+            },
+        },
+        "required": ["id", "note"],
     },
 }
 
@@ -602,6 +622,98 @@ class LLMClient:
     # Compact — private chat
     # ------------------------------------------------------------------
 
+    async def _compact_with_tools(
+        self,
+        system: list[dict[str, Any]],
+        messages: list[dict[str, Any]],
+        source: str,
+        group_id: str | None,
+    ) -> str:
+        """Run a compact LLM call with an update_memo tool loop.
+
+        Returns the summary text. Memo writes happen via tool calls.
+        """
+        tools: list[dict[str, Any]] | None = None
+        if self._memo_store:
+            tools = [_COMPACT_MEMO_TOOL]
+
+        acc_input = 0
+        acc_output = 0
+        acc_cache_read = 0
+        acc_cache_create = 0
+        memo_writes = 0
+
+        for round_i in range(_MAX_COMPACT_TOOL_ROUNDS):
+            result = await _call_api(
+                self._session, self._base_url, self._api_key, self._model,
+                system, messages, max_tokens=1024, tools=tools,
+            )
+            acc_input += result["input_tokens"] - result.get("cache_read", 0) - result.get("cache_create", 0)
+            acc_output += result.get("output_tokens", 0)
+            acc_cache_read += result.get("cache_read", 0)
+            acc_cache_create += result.get("cache_create", 0)
+
+            text: str = result["text"].strip()
+            tool_uses: list[_ToolUse] = result["tool_uses"]
+
+            if not tool_uses:
+                self._record_usage(
+                    call_type="compact", user_id="", group_id=group_id,
+                    input_tokens=acc_input, cache_read_tokens=acc_cache_read,
+                    cache_create_tokens=acc_cache_create, output_tokens=acc_output,
+                    tool_rounds=round_i, elapsed_s=0.0,
+                )
+                return text
+
+            # Build assistant message with text + tool_use blocks
+            assistant_content: list[dict[str, Any]] = []
+            if text:
+                assistant_content.append({"type": "text", "text": text})
+            for tu in tool_uses:
+                assistant_content.append({"type": "tool_use", "id": tu.id, "name": tu.name, "input": tu.input})
+            messages.append({"role": "assistant", "content": assistant_content})
+
+            # Execute append_memo tool calls
+            tool_results: list[dict[str, Any]] = []
+            for tu in tool_uses:
+                if tu.name == "append_memo" and self._memo_store:
+                    memo_id = tu.input.get("id", "")
+                    note = tu.input.get("note", "")
+                    if memo_id and note:
+                        try:
+                            await self._memo_store.append(memo_id, note, source)
+                            memo_writes += 1
+                            logger.debug("compact memo append | id={} source={}", memo_id, source)
+                            tool_results.append({"type": "tool_result", "tool_use_id": tu.id, "content": "已追加"})
+                        except (ValueError, OSError) as e:
+                            logger.warning("compact memo append failed | id={} error={}", memo_id, e)
+                            result_msg = f"写入失败: {e}"
+                            tool_results.append({"type": "tool_result", "tool_use_id": tu.id, "content": result_msg})
+                    else:
+                        tool_results.append({
+                            "type": "tool_result", "tool_use_id": tu.id, "content": "缺少 id 或 note 参数",
+                        })
+                else:
+                    tool_results.append({"type": "tool_result", "tool_use_id": tu.id, "content": "未知工具"})
+            messages.append({"role": "user", "content": tool_results})
+
+        # Exhausted rounds — do a final call without tools to get summary
+        result = await _call_api(
+            self._session, self._base_url, self._api_key, self._model,
+            system, messages, max_tokens=1024,
+        )
+        acc_input += result["input_tokens"] - result.get("cache_read", 0) - result.get("cache_create", 0)
+        acc_output += result.get("output_tokens", 0)
+        acc_cache_read += result.get("cache_read", 0)
+        acc_cache_create += result.get("cache_create", 0)
+        self._record_usage(
+            call_type="compact", user_id="", group_id=group_id,
+            input_tokens=acc_input, cache_read_tokens=acc_cache_read,
+            cache_create_tokens=acc_cache_create, output_tokens=acc_output,
+            tool_rounds=_MAX_COMPACT_TOOL_ROUNDS, elapsed_s=0.0,
+        )
+        return result["text"].strip()
+
     async def _compact(self, session_id: str) -> None:
         """Compress first half of history into summary and extract user memo."""
         if self._private_compact_failures >= self._max_compact_failures:
@@ -626,13 +738,9 @@ class LLMClient:
             conversation_text = "\n".join(lines)
 
             # Extract user_id from session_id (format: "private_{user_id}")
-            user_memo_ctx = ""
             user_id = ""
             if self._memo_store and session_id.startswith("private_"):
                 user_id = session_id[len("private_"):]
-                memo = self._memo_store.read(f"user_{user_id}")
-                body = memo.body.strip() if memo else "暂无记录"
-                user_memo_ctx = f"\n当前用户备忘录：\n  「{body}」\n"
 
             if self._memo_store and user_id:
                 system = [{"type": "text", "text": (
@@ -640,10 +748,11 @@ class LLMClient:
                     "1. 将以下对话历史压缩成简洁的中文摘要。"
                     "保留关键信息：用户的问题、重要决策、关键结论、用户偏好。"
                     "去掉寒暄、重复内容和过程性细节。\n"
-                    "2. 更新用户备忘录（全文重写，不是追加）。\n"
-                    f"{user_memo_ctx}\n"
-                    '以 JSON 输出：{"summary": "摘要", "memo": "完整新版用户备忘录"}\n'
-                    "备忘录规则：记印象和结论，不记流水账。没有新信息可省略 memo 字段。只输出 JSON。"
+                    "2. 如果对话中出现了关于用户的新信息（性格、偏好、背景等），"
+                    f"用 append_memo 工具追加到 user_{user_id}。"
+                    "没有新信息则不需要调用。\n"
+                    "备忘录规则：只记新的印象和结论，不记流水账。\n"
+                    "最终请输出纯摘要文本（不要加标题或格式）。"
                 )}]
             else:
                 system = [{"type": "text", "text": (
@@ -651,45 +760,17 @@ class LLMClient:
                     "保留关键信息：用户的问题、重要决策、关键结论、用户偏好。"
                     "去掉寒暄、重复内容和过程性细节。输出纯摘要文本，不要加标题或格式。"
                 )}]
-            compress_messages = [{"role": "user", "content": conversation_text}]
+            compress_messages: list[dict[str, Any]] = [{"role": "user", "content": conversation_text}]
 
             logger.info("compact | session={} split={}/{}", session_id, split, len(history))
-            result = await _call_api(
-                self._session, self._base_url, self._api_key, self._model,
-                system, compress_messages, max_tokens=1024,
-            )
-            self._record_usage(
-                call_type="compact", user_id="", group_id=None,
-                input_tokens=result["input_tokens"] - result.get("cache_read", 0) - result.get("cache_create", 0),
-                cache_read_tokens=result.get("cache_read", 0),
-                cache_create_tokens=result.get("cache_create", 0),
-                output_tokens=result.get("output_tokens", 0),
-                tool_rounds=0, elapsed_s=0.0,
-            )
-            raw_text = result["text"].strip()
-
-            new_summary = ""
-            memo_text = ""
-            if self._memo_store and user_id:
-                try:
-                    parsed = json.loads(raw_text)
-                    new_summary = parsed.get("summary", "")
-                    memo_text = parsed.get("memo", "")
-                except (json.JSONDecodeError, TypeError):
-                    # Backward compat: treat whole text as summary
-                    logger.warning("compact JSON parse failed, using raw text as summary | session={}", session_id)
-                    new_summary = raw_text
-            else:
-                new_summary = raw_text
+            source = f"compact:private:{session_id}"
+            new_summary = await self._compact_with_tools(system, compress_messages, source, group_id=None)
 
             if new_summary:
                 self._short_term.compact(session_id, split, new_summary)
                 logger.info("compact done | session={} summary_len={}", session_id, len(new_summary))
             else:
                 logger.warning("compact produced empty summary | session={}", session_id)
-
-            if self._memo_store and user_id and memo_text:
-                await self._memo_store.write(f"user_{user_id}", memo_text, f"compact:private:{session_id}")
 
             self._private_compact_failures = 0
             if self._on_compact:
@@ -732,85 +813,38 @@ class LLMClient:
                     lines.append(f"用户: {_content_text(msg['content'])}")
             conversation_text = "\n".join(lines)
 
-            # Build user memo context
-            user_memos_ctx = ""
-            group_memo_ctx = "暂无记录"
+            # Collect user IDs seen in the messages being compacted
+            seen_user_ids: list[str] = []
             if self._memo_store:
-                seen_users: set[str] = set()
+                seen: set[str] = set()
                 for msg in messages[:split]:
                     speaker = msg.get("speaker") or ""
                     if speaker:
-                        # Extract QQ号 from "昵称(QQ号)" format
                         m = re.search(r"\((\d+)\)$", speaker)
-                        if m:
-                            seen_users.add(m.group(1))
-                for uid in sorted(seen_users):
-                    memo = self._memo_store.read(f"user_{uid}")
-                    body = memo.body.strip() if memo else "暂无记录"
-                    user_memos_ctx += f"  @{uid}: 「{body}」\n"
-
-                group_memo = self._memo_store.read(f"group_{group_id}")
-                group_memo_ctx = group_memo.body.strip() if group_memo else "暂无记录"
+                        if m and m.group(1) not in seen:
+                            seen.add(m.group(1))
+                            seen_user_ids.append(m.group(1))
 
             system = [{"type": "text", "text": (
                 "你是一个对话分析助手。请完成两个任务：\n"
                 "1. 将以下群聊记录压缩成简洁的中文摘要。保留关键信息。\n"
-                "2. 更新相关用户和群的备忘录（全文重写，不是追加）。\n\n"
-                f"当前用户备忘录：\n{user_memos_ctx}\n"
-                f"当前群备忘录：\n  「{group_memo_ctx}」\n\n"
-                "以 JSON 输出：\n"
-                '{"summary": "摘要", "memos": {"QQ号": "完整新版用户备忘录", ...}, '
-                '"group_memo": "完整新版群备忘录"}\n\n'
+                "2. 如果对话中出现了关于用户或群组的新信息（性格、偏好、关系、群氛围等），"
+                "用 append_memo 工具追加新观察。没有新信息则不需要调用。\n\n"
+                f"本群 ID: group_{group_id}\n"
+                f"出现的用户 ID: {', '.join(f'user_{uid}' for uid in seen_user_ids)}\n\n"
                 "备忘录规则：用 @QQ号 标注人物，#群号 标注群。QQ号是唯一身份标识，昵称不可信。\n"
-                "记印象和结论，不记流水账。没有新信息的用户可省略。只输出 JSON。"
+                "只记新的印象和结论，不记流水账。\n"
+                "最终请输出纯摘要文本（不要加标题或格式）。"
             )}]
-            compress_messages = [{"role": "user", "content": conversation_text}]
+            compress_messages: list[dict[str, Any]] = [{"role": "user", "content": conversation_text}]
 
             logger.info("compact_group | group={} split={}/{}", group_id, split, len(messages))
-            result = await _call_api(
-                self._session, self._base_url, self._api_key, self._model,
-                system, compress_messages, max_tokens=1024,
-            )
-            self._record_usage(
-                call_type="compact", user_id="", group_id=group_id,
-                input_tokens=result["input_tokens"] - result.get("cache_read", 0) - result.get("cache_create", 0),
-                cache_read_tokens=result.get("cache_read", 0),
-                cache_create_tokens=result.get("cache_create", 0),
-                output_tokens=result.get("output_tokens", 0),
-                tool_rounds=0, elapsed_s=0.0,
-            )
-            raw_text = result["text"].strip()
+            source = f"compact:group:{group_id}"
+            new_summary = await self._compact_with_tools(system, compress_messages, source, group_id=group_id)
 
-            new_summary = ""
-            parsed: dict[str, Any] = {}
-            try:
-                parsed = json.loads(raw_text)
-                new_summary = parsed.get("summary", "")
-            except (json.JSONDecodeError, TypeError):
-                logger.warning("compact_group JSON parse failed, using raw text as summary | group={}", group_id)
-                new_summary = raw_text
-
-            # Batch all writes together
             if new_summary:
                 self._timeline.compact(group_id, split, new_summary)
-            if self._memo_store:
-                memos = parsed.get("memos", {})
-                if not isinstance(memos, dict):
-                    logger.warning("compact_group memos is not a dict, skipping | group={}", group_id)
-                    memos = {}
-                for uid, memo_text in memos.items():
-                    if not (uid and memo_text and isinstance(uid, str) and uid.isdigit()):
-                        continue
-                    await self._memo_store.write(f"user_{uid}", memo_text, f"compact:group:{group_id}")
-                group_memo_text = parsed.get("group_memo", "")
-                if group_memo_text:
-                    await self._memo_store.write(f"group_{group_id}", group_memo_text, f"compact:group:{group_id}")
-
-            if new_summary:
-                logger.info(
-                    "compact_group done | group={} summary_len={} memos={}",
-                    group_id, len(new_summary), len(parsed.get("memos", {})),
-                )
+                logger.info("compact_group done | group={} summary_len={}", group_id, len(new_summary))
             else:
                 logger.warning("compact_group produced empty summary | group={}", group_id)
 

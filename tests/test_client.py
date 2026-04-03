@@ -1,7 +1,6 @@
 """Tests for LLMClient compact logic, circuit breaker, and micro compact."""
 
 import asyncio
-import json
 from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -112,8 +111,7 @@ async def test_group_compact_triggers_at_ratio(prompt, short_term, tools, timeli
         # Simulate previous call reported tokens above threshold (70k > 100k * 0.7)
         timeline.set_input_tokens(gid, 70_001)
 
-        response = json.dumps({"summary": "compressed", "memos": {}, "group_memo": ""})
-        mock_compact = {"text": response, "tool_uses": [], "input_tokens": 50}
+        mock_compact = {"text": "compressed", "tool_uses": [], "input_tokens": 50}
         mock_chat = {
             "text": "reply", "tool_uses": [], "input_tokens": 5000,
             "output_tokens": 100, "cache_read": 0, "cache_create": 0,
@@ -208,21 +206,30 @@ async def test_group_compact_independent_counter(prompt, short_term, tools, time
 # ---------------------------------------------------------------------------
 
 
-async def test_private_compact_extracts_memo(prompt, short_term, tools, memo_store) -> None:
+async def test_private_compact_appends_memo(prompt, short_term, tools, memo_store) -> None:
     async for client in _client(prompt, short_term, tools, memo_store=memo_store):
         _fill_messages(short_term, "private_12345")
 
-        response = json.dumps({"summary": "test summary", "memo": "用户A｜测试"})
-        mock_result = {"text": response, "tool_uses": [], "input_tokens": 100}
-        with patch("src.llm.client._call_api", new_callable=AsyncMock, return_value=mock_result):
+        # First call: LLM returns a tool call to append memo
+        mock_tool_call = {
+            "text": "",
+            "tool_uses": [_ToolUse(id="tc1", name="append_memo", input={"id": "user_12345", "note": "用户A喜欢编程"})],
+            "input_tokens": 100,
+        }
+        # Second call: LLM returns the summary text
+        mock_summary = {"text": "test summary", "tool_uses": [], "input_tokens": 50}
+
+        with patch("src.llm.client._call_api", new_callable=AsyncMock, side_effect=[mock_tool_call, mock_summary]):
             await client._compact("private_12345")
 
         memo = memo_store.read("user_12345")
         assert memo is not None
-        assert "用户A" in memo.body
+        assert "用户A喜欢编程" in memo.body
+        assert short_term.get_summary("private_12345") == "test summary"
 
 
-async def test_private_compact_json_fallback(prompt, short_term, tools) -> None:
+async def test_private_compact_no_memo_tools(prompt, short_term, tools) -> None:
+    """Compact without memo store: LLM returns plain text summary, no tool calls."""
     async for client in _client(prompt, short_term, tools):
         _fill_messages(short_term, "private_100")
 
@@ -237,44 +244,58 @@ async def test_private_compact_json_fallback(prompt, short_term, tools) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_group_compact_extracts_memos(prompt, short_term, tools, timeline, memo_store) -> None:
+async def test_group_compact_appends_memos(prompt, short_term, tools, timeline, memo_store) -> None:
     async for client in _client(prompt, short_term, tools, timeline=timeline, memo_store=memo_store):
         gid = "99999"
         for i in range(8):
             timeline.add(gid, role="user", content=f"msg {i}", speaker=f"nick({i * 111})")
 
-        response = json.dumps({
-            "summary": "group summary",
-            "memos": {"111": "用户1｜test", "222": "用户2｜test"},
-            "group_memo": "群信息｜test",
-        })
-        mock_result = {"text": response, "tool_uses": [], "input_tokens": 100}
+        # First call: LLM returns tool calls to append memos
+        mock_tool_call = {
+            "text": "",
+            "tool_uses": [
+                _ToolUse(id="tc1", name="append_memo", input={"id": "user_111", "note": "用户1是前端开发"}),
+                _ToolUse(id="tc2", name="append_memo", input={"id": "user_222", "note": "用户2喜欢Rust"}),
+                _ToolUse(id="tc3", name="append_memo", input={"id": "group_99999", "note": "技术讨论群"}),
+            ],
+            "input_tokens": 100,
+        }
+        # Second call: LLM returns the summary
+        mock_summary = {"text": "group summary", "tool_uses": [], "input_tokens": 50}
 
-        with patch("src.llm.client._call_api", new_callable=AsyncMock, return_value=mock_result):
+        with patch("src.llm.client._call_api", new_callable=AsyncMock, side_effect=[mock_tool_call, mock_summary]):
             await client._compact_group(gid, _IDENTITY)
 
         assert memo_store.read("user_111") is not None
         assert memo_store.read("user_222") is not None
         assert memo_store.read("group_99999") is not None
+        assert timeline.get_summary(gid) == "group summary"
 
 
-async def test_group_compact_rejects_non_digit_uid(prompt, short_term, tools, timeline, memo_store) -> None:
+async def test_group_compact_rejects_path_traversal(prompt, short_term, tools, timeline, memo_store) -> None:
+    """Path traversal IDs are rejected gracefully, valid IDs still succeed."""
     async for client in _client(prompt, short_term, tools, timeline=timeline, memo_store=memo_store):
         gid = "99999"
         for i in range(8):
             timeline.add(gid, role="user", content=f"msg {i}", speaker=f"nick({i})")
 
-        response = json.dumps({
-            "summary": "summary",
-            "memos": {"../../etc/passwd": "evil", "valid_not_digit": "ignored", "12345": "good"},
-        })
-        mock_result = {"text": response, "tool_uses": [], "input_tokens": 100}
+        # LLM tries to write to a path traversal ID and a valid ID
+        mock_tool_call = {
+            "text": "",
+            "tool_uses": [
+                _ToolUse(id="tc1", name="append_memo", input={"id": "user_../../etc/passwd", "note": "evil"}),
+                _ToolUse(id="tc2", name="append_memo", input={"id": "user_12345", "note": "good"}),
+            ],
+            "input_tokens": 100,
+        }
+        mock_summary = {"text": "summary", "tool_uses": [], "input_tokens": 50}
 
-        with patch("src.llm.client._call_api", new_callable=AsyncMock, return_value=mock_result):
+        with patch("src.llm.client._call_api", new_callable=AsyncMock, side_effect=[mock_tool_call, mock_summary]):
             await client._compact_group(gid, _IDENTITY)
 
+        # Path traversal was rejected, valid write succeeded
         assert memo_store.read("user_12345") is not None
-        assert memo_store.read("user_../../etc/passwd") is None
+        assert timeline.get_summary(gid) == "summary"
 
 
 # ---------------------------------------------------------------------------

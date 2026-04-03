@@ -294,3 +294,18 @@ class MemoStore:
             os.rename(index_tmp, index_path)
 
         logger.debug(f"Wrote memo {id} from source={source!r}")
+
+    async def append(self, id: str, note: str, source: str) -> None:
+        """Append a note to an existing memo (or create a new one).
+
+        Unlike write(), this preserves existing content and adds the note at the end.
+        The combined content is still subject to max_chars truncation (from the front).
+        """
+        self._check_started()
+        existing = self._memos.get(id)
+        if existing:
+            body = existing.body.strip()
+            combined = f"{body}\n{note}"
+        else:
+            combined = note
+        await self.write(id, combined, source)
