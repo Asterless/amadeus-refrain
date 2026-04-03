@@ -51,6 +51,10 @@ Deep dives → [docs/architecture.md](docs/architecture.md) | Docker/ops → [do
 All tests must pass (`uv run pytest`) before committing. Same for lint and type checks.
 Fix any errors discovered during testing, even if they were pre-existing and not introduced by your changes.
 
+## Release
+
+发布新版本时，Docker 镜像版本必须和 git tag 对齐。
+
 ## Language
 
 Chinese: user-facing strings, identity configs. English: code, comments, docstrings, logs, commits.
