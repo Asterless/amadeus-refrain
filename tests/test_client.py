@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 
 from src.identity.models import Identity
-from src.llm.client import LLMClient, _content_text, _resolve_image_refs, _to_anthropic_message, _ToolUse
+from src.llm.client import LLMClient, _content_text, _fix_cq_codes, _resolve_image_refs, _to_anthropic_message, _ToolUse
 from src.llm.prompt import PromptBuilder
 from src.llm.usage import UsageTracker
 from src.memory.group_timeline import GroupTimeline
@@ -493,3 +493,15 @@ async def test_resolve_image_refs_preserves_cache_control() -> None:
     ]}]
     result = await _resolve_image_refs(msgs, mock_cache)
     assert result[0]["content"][0]["cache_control"] == {"type": "ephemeral"}
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("[CQ:reply,id:457521541]hello", "[CQ:reply,id=457521541]hello"),
+    ("[CQ:reply,id:-123456]hi", "[CQ:reply,id=-123456]hi"),
+    ("[CQ:at,qq:654321]", "[CQ:at,qq=654321]"),
+    ("[CQ:reply,id=123]ok", "[CQ:reply,id=123]ok"),  # already correct
+    ("plain text", "plain text"),  # no CQ codes
+    ("[CQ:face,id:1]", "[CQ:face,id=1]"),
+])
+def test_fix_cq_codes(raw: str, expected: str) -> None:
+    assert _fix_cq_codes(raw) == expected

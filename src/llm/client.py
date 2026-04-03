@@ -30,6 +30,8 @@ _RATE_LIMIT_BASE_DELAY = 5.0  # seconds
 _SEGMENT_SEP = "---cut---"
 _SEGMENT_DELAY = 0.5  # seconds between segment sends
 _BLANK_LINE_RE = re.compile(r"\n{2,}")
+_CQ_CODE_RE = re.compile(r"\[CQ:[^\]]+\]")
+_CQ_KV_FIX_RE = re.compile(r",(\w+):")
 
 
 class RateLimitError(RuntimeError):
@@ -41,8 +43,14 @@ def _clean_text(text: str) -> str:
     return _BLANK_LINE_RE.sub("\n", text).strip()
 
 
+def _fix_cq_codes(text: str) -> str:
+    """Normalize CQ code params: [CQ:reply,id:123] → [CQ:reply,id=123]."""
+    return _CQ_CODE_RE.sub(lambda m: _CQ_KV_FIX_RE.sub(r",\1=", m.group(0)), text)
+
+
 def _split_segments(text: str) -> list[str]:
     """Split reply into multiple messages by --- separator, cleaning blank lines."""
+    text = _fix_cq_codes(text)
     segments: list[str] = []
     current: list[str] = []
     for line in text.split("\n"):
