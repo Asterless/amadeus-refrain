@@ -49,6 +49,7 @@ Deep dives → [docs/architecture.md](docs/architecture.md) | Docker/ops → [do
 ## Workflow
 
 All tests must pass (`uv run pytest`) before committing. Same for lint and type checks.
+Fix any errors discovered during testing, even if they were pre-existing and not introduced by your changes.
 
 ## Language
 
