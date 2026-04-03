@@ -90,7 +90,6 @@ class DreamConfig(BaseModel):
 
     enabled: bool = False
     interval_hours: int = 24
-    min_compacts: int = 5
     max_rounds: int = 15
 
 

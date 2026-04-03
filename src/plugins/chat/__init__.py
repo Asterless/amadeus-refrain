@@ -19,7 +19,7 @@ from src.llm.client import (
     LLMClient,
     RateLimitError,
 )
-from src.llm.dream import DreamAgent
+from src.llm.dream import DreamAgent, setup_dream_logger
 from src.llm.prompt import PromptBuilder, load_instruction
 from src.llm.scheduler import GroupChatScheduler
 from src.llm.usage import UsageTracker
@@ -110,10 +110,11 @@ async def _init() -> None:
     prompt_builder.build_static(identity, bot_self_id="")
 
     _dream_enabled = bot_config.dream.enabled
+    if _dream_enabled:
+        setup_dream_logger(bot_config.log.dir)
     _dream = DreamAgent(
         store=memo_store,
         interval_hours=bot_config.dream.interval_hours,
-        min_compacts=bot_config.dream.min_compacts,
         max_rounds=bot_config.dream.max_rounds,
         user_max_chars=bot_config.memo.user_max_chars,
         group_max_chars=bot_config.memo.group_max_chars,
@@ -136,7 +137,7 @@ async def _init() -> None:
         max_compact_failures=bot_config.compact.max_failures,
         group_timeline=_timeline,
         memo_store=memo_store,
-        on_compact=lambda: _dream.notify_compact(),
+        on_compact=None,
         image_cache=_image_cache if _vision_enabled else None,
     )
     if bot_config.llm.usage.enabled:
@@ -161,6 +162,8 @@ async def _init() -> None:
 
 @driver.on_shutdown
 async def _shutdown() -> None:
+    if _dream_enabled:
+        await _dream.stop()
     await _llm.close()
     await _scheduler.close()
     await _usage_tracker.close()
@@ -210,6 +213,9 @@ async def _on_connect(bot: Bot) -> None:
     except Exception:
         logger.exception("failed to load group history")
         return
+    if _dream_enabled:
+        _dream.start(_llm._call)
+
     logger.info("Bot 就绪，开始接收消息 ✓")
 
     # Evaluate history for each group — catch up on missed messages
@@ -399,9 +405,6 @@ async def handle_private_chat(bot: Bot, event: MessageEvent) -> None:
             logger.exception("chat error")
             reply = "出错了，请稍后再试"
             break
-
-    if _dream_enabled:
-        await _dream.maybe_run(_llm._call)
 
     if reply:
         await private_chat.finish(Message(reply))

@@ -250,7 +250,6 @@ def test_memo_config_defaults() -> None:
     d = DreamConfig()
     assert d.enabled is False
     assert d.interval_hours == 24
-    assert d.min_compacts == 5
     assert d.max_rounds == 15
 
 

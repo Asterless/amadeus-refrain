@@ -1,8 +1,10 @@
 """Dream agent: periodic background memory consolidation with LLM tool loop."""
 
 import asyncio
+import contextlib
 import time
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 
 from loguru import logger
@@ -11,6 +13,23 @@ from src.memory.memo_store import GROUP_MEMO_TEMPLATE, PENDING_HEADER, USER_MEMO
 
 # Type alias for the LLM API caller (matches LLMClient._call signature)
 ApiCaller = Callable[..., Awaitable[dict[str, Any]]]
+
+# Dedicated dream logger — writes only to dream log files, not the main bot log.
+dream_logger = logger.bind(dream=True)
+
+
+def setup_dream_logger(log_dir: str) -> None:
+    """Add a dedicated sink for dream logs, filtered from the main bot log."""
+    path = Path(log_dir)
+    path.mkdir(parents=True, exist_ok=True)
+    logger.add(
+        path / "dream_{time:YYYY-MM-DD}.log",
+        rotation="10 MB",
+        retention="30 days",
+        encoding="utf-8",
+        level="DEBUG",
+        filter=lambda record: record["extra"].get("dream", False),
+    )
 
 _RECALL_MEMO_TOOL: dict[str, Any] = {
     "name": "recall_memo",
@@ -82,52 +101,54 @@ class DreamAgent:
         self,
         store: MemoStore,
         interval_hours: int = 24,
-        min_compacts: int = 5,
         max_rounds: int = 15,
         user_max_chars: int = 300,
         group_max_chars: int = 500,
     ) -> None:
         self._store = store
         self._interval_hours = interval_hours
-        self._min_compacts = min_compacts
         self._max_rounds = max_rounds
         self._user_max_chars = user_max_chars
         self._group_max_chars = group_max_chars
-        self._last_dream_time: float = time.time()
-        self._compacts_since_dream: int = 0
         self._running: bool = False
-        self._task: asyncio.Task[None] | None = None
+        self._loop_task: asyncio.Task[None] | None = None
 
-    def notify_compact(self) -> None:
-        """Called after each successful compact."""
-        self._compacts_since_dream += 1
+    def start(self, api_call: ApiCaller) -> None:
+        """Start the independent background dream loop."""
+        if self._loop_task is not None:
+            return
+        self._loop_task = asyncio.create_task(self._loop(api_call))
+        self._loop_task.add_done_callback(self._on_loop_done)
+        dream_logger.info("dream loop started | interval={}h", self._interval_hours)
 
-    def should_run(self) -> bool:
-        if self._running:
-            return False
-        elapsed_hours = (time.time() - self._last_dream_time) / 3600
-        return (
-            elapsed_hours >= self._interval_hours
-            and self._compacts_since_dream >= self._min_compacts
-        )
+    async def stop(self) -> None:
+        """Cancel the background loop and wait for it to finish."""
+        if self._loop_task is not None:
+            self._loop_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._loop_task
+            self._loop_task = None
+            dream_logger.info("dream loop stopped")
 
-    async def maybe_run(self, api_call: ApiCaller) -> None:
-        """Check trigger conditions and run dream if met. Fire-and-forget."""
-        if self.should_run():
-            self._running = True
-            self._task = asyncio.create_task(self._run(api_call))
-            self._task.add_done_callback(self._on_task_done)
+    async def _loop(self, api_call: ApiCaller) -> None:
+        """Sleep → run → repeat. First run waits a full interval."""
+        interval_s = self._interval_hours * 3600
+        while True:
+            await asyncio.sleep(interval_s)
+            await self._run(api_call)
 
-    def _on_task_done(self, task: asyncio.Task[None]) -> None:
+    def _on_loop_done(self, task: asyncio.Task[None]) -> None:
         if task.cancelled():
-            logger.warning("dream task cancelled")
-        elif exc := task.exception():
-            logger.error("dream task failed: {}", exc)
+            return
+        if exc := task.exception():
+            dream_logger.error("dream loop crashed: {}", exc)
 
     async def _run(self, api_call: ApiCaller) -> None:
         """Run the dream agent with a tool loop for memo consolidation."""
+        self._running = True
+        t0 = time.time()
         try:
-            logger.info("dream starting")
+            dream_logger.info("dream starting")
             issues = dream_pre_check(self._store, self._user_max_chars, self._group_max_chars)
             index_text = self._store.serialize_index()
             issues_text = "\n".join(f"- {i}" for i in issues) if issues else "无明显问题"
@@ -167,9 +188,9 @@ class DreamAgent:
                 tool_uses: list[Any] = result["tool_uses"]
 
                 if not tool_uses:
-                    logger.info(
-                        "dream finished | rounds={} reads={} writes={}",
-                        round_i + 1, memo_reads, memo_writes,
+                    dream_logger.info(
+                        "dream finished | rounds={} reads={} writes={} elapsed={:.1f}s",
+                        round_i + 1, memo_reads, memo_writes, time.time() - t0,
                     )
                     break
 
@@ -195,25 +216,27 @@ class DreamAgent:
                         memo_reads += 1
                     elif tu.name == "update_memo":
                         memo_writes += 1
+                    dream_logger.debug(
+                        "tool {} | id={} | result={}",
+                        tu.name, tu.input.get("id", "?"), result_msg[:80],
+                    )
                 messages.append({"role": "user", "content": tool_results})
             else:
-                logger.warning(
-                    "dream exhausted max rounds | reads={} writes={}",
-                    memo_reads, memo_writes,
+                dream_logger.warning(
+                    "dream exhausted max rounds | reads={} writes={} elapsed={:.1f}s",
+                    memo_reads, memo_writes, time.time() - t0,
                 )
 
-            self._last_dream_time = time.time()
-            self._compacts_since_dream = 0
-            logger.info("dream completed")
+            dream_logger.info("dream completed")
         except Exception:
-            logger.exception("dream failed")
+            dream_logger.exception("dream failed")
         finally:
             self._running = False
 
-    async def _execute_tool(self, name: str, input: dict[str, Any]) -> str:
+    async def _execute_tool(self, name: str, inp: dict[str, Any]) -> str:
         """Execute a dream tool call and return the result string."""
         if name == "recall_memo":
-            memo_id = input.get("id", "")
+            memo_id = inp.get("id", "")
             if not memo_id:
                 return "缺少 id 参数"
             memo = self._store.read(memo_id)
@@ -222,8 +245,8 @@ class DreamAgent:
             return memo.body
 
         if name == "update_memo":
-            memo_id = input.get("id", "")
-            memo_content = input.get("memo", "")
+            memo_id = inp.get("id", "")
+            memo_content = inp.get("memo", "")
             if not memo_id or not memo_content:
                 return "缺少 id 或 memo 参数"
             try:

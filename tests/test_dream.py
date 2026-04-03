@@ -62,41 +62,6 @@ def test_pre_check_detects_pending_items(pending_store: MemoStore) -> None:
     assert any("group_200" in i and "1 pending" in i for i in pending_issues)
 
 
-def test_dream_should_run_when_conditions_met(store: MemoStore) -> None:
-    agent = DreamAgent(store=store, interval_hours=0, min_compacts=0, max_rounds=5)
-    agent._last_dream_time = 0
-    agent._compacts_since_dream = 1
-    assert agent.should_run()
-
-
-def test_dream_should_not_run_too_early(store: MemoStore) -> None:
-    agent = DreamAgent(store=store, interval_hours=24, min_compacts=5, max_rounds=5)
-    assert not agent.should_run()
-
-
-def test_dream_should_not_run_insufficient_compacts(store: MemoStore) -> None:
-    agent = DreamAgent(store=store, interval_hours=0, min_compacts=5, max_rounds=5)
-    agent._last_dream_time = 0
-    agent._compacts_since_dream = 3
-    assert not agent.should_run()
-
-
-def test_dream_should_not_run_while_running(store: MemoStore) -> None:
-    agent = DreamAgent(store=store, interval_hours=0, min_compacts=0, max_rounds=5)
-    agent._last_dream_time = 0
-    agent._compacts_since_dream = 10
-    agent._running = True
-    assert not agent.should_run()
-
-
-def test_notify_compact_increments(store: MemoStore) -> None:
-    agent = DreamAgent(store=store)
-    assert agent._compacts_since_dream == 0
-    agent.notify_compact()
-    agent.notify_compact()
-    assert agent._compacts_since_dream == 2
-
-
 class _FakeToolUse:
     """Minimal stand-in for client._ToolUse to avoid importing private class."""
 
@@ -108,11 +73,7 @@ class _FakeToolUse:
 
 async def test_dream_run_reads_and_writes_memos(pending_store: MemoStore) -> None:
     """Dream tool loop: reads pending memos, then writes merged versions."""
-    agent = DreamAgent(
-        store=pending_store, interval_hours=0, min_compacts=0, max_rounds=15,
-    )
-    agent._last_dream_time = 0
-    agent._compacts_since_dream = 10
+    agent = DreamAgent(store=pending_store, max_rounds=15)
 
     call_count = 0
 
@@ -192,8 +153,6 @@ async def test_dream_run_reads_and_writes_memos(pending_store: MemoStore) -> Non
     after_pending = group_memo.body.split("## 待整理", 1)[1].strip()
     assert after_pending == ""
 
-    # Counters reset
-    assert agent._compacts_since_dream == 0
     assert agent._running is False
 
 
@@ -205,11 +164,7 @@ async def test_dream_cross_validates_memos(pending_store: MemoStore) -> None:
         "### 成员\n- @100(旧昵称): 毕业生\n\n## 待整理",
         "test",
     )
-    agent = DreamAgent(
-        store=pending_store, interval_hours=0, min_compacts=0, max_rounds=15,
-    )
-    agent._last_dream_time = 0
-    agent._compacts_since_dream = 10
+    agent = DreamAgent(store=pending_store, max_rounds=15)
 
     call_count = 0
 
@@ -261,10 +216,8 @@ async def test_dream_cross_validates_memos(pending_store: MemoStore) -> None:
     assert "毕业生" not in group.body
 
 
-async def test_dream_run_resets_counters(store: MemoStore) -> None:
-    agent = DreamAgent(store=store, interval_hours=0, min_compacts=0, max_rounds=5)
-    agent._last_dream_time = 0
-    agent._compacts_since_dream = 10
+async def test_dream_run_clears_running_flag(store: MemoStore) -> None:
+    agent = DreamAgent(store=store, max_rounds=5)
 
     async def mock_api_call(
         system: list, messages: list, tools: list | None = None, max_tokens: int = 1024,
@@ -281,7 +234,6 @@ async def test_dream_run_resets_counters(store: MemoStore) -> None:
         }
 
     await agent._run(mock_api_call)
-    assert agent._compacts_since_dream == 0
     assert agent._running is False
 
 

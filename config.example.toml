@@ -101,8 +101,6 @@ cache_alert_cooldown_m = 10.0
 enabled = false
 # 多久跑一次（小时）
 interval_hours = 24
-# 至少累积多少次 compact 后才触发
-min_compacts = 5
 # 单次 dream 最大轮次
 max_rounds = 15
 

@@ -33,6 +33,7 @@ logger.add(
     retention="30 days",
     encoding="utf-8",
     level="DEBUG",
+    filter=lambda record: not record["extra"].get("dream", False),
 )
 
 _c = _bot_config
