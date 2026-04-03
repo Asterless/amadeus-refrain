@@ -17,6 +17,7 @@ uv run pyright                 # Type check
 | Restart bot (soul/config) | `docker compose restart bot` |
 | Rebuild bot (code/deps) | `docker compose up bot -d --build` |
 | Usage TUI | `uv run python -m src.llm.usage_cli tui day\|week\|month [date]` |
+| Usage API | `GET /usage/summary/today`, `/usage/summary/month`, `/usage/top-users`, `/usage/top-groups`, `/usage/timeseries` |
 | Build & deploy | `./scripts/deploy.sh` |
 
 ## Architecture
@@ -28,19 +29,24 @@ QQ ←→ NapCat (WS) ←→ NoneBot2 (bot.py)
                         ├── private_chat (DM, priority=10)
                         │     → LLMClient.chat() → Anthropic SSE stream
                         │       └── Tool loop (max 5 rounds), pass_turn to skip
-                        └── group_listener (priority=1, non-blocking)
-                              → GroupTimeline → GroupChatScheduler
-                                ├── @bot → fire immediately
-                                ├── debounce (N sec quiet) → LLM chat
-                                └── batch (M msgs full) → LLM chat
+                        ├── group_listener (priority=1, non-blocking)
+                        │     → GroupTimeline → GroupChatScheduler
+                        │       ├── @bot → fire immediately
+                        │       ├── debounce (N sec quiet) → LLM chat
+                        │       └── batch (M msgs full) → LLM chat
+                        └── DreamAgent (background, periodic)
+                              → consolidate memos + sticker cleanup
 ```
 
 Key design choices:
 - **Raw Anthropic API** via aiohttp SSE, no SDK — tool calls touch `_call_api` in `src/llm/client.py`
-- **Prompt caching** — system blocks use `cache_control: ephemeral`; second-to-last history msg cached
-- **Context compaction** — front half of history compressed via LLM when exceeding `max_context_tokens × compact_ratio`
-- **Soul directory** — `soul/identity.md` (persona), `soul/instruction.md` (behavioral directives)
-- **Memory** — short-term: in-memory deque per session; long-term: `.qmd` files in `storage/memories/`
+- **Prompt caching** — 4 breakpoints: tools[-1], system block 1 (personality+instruction), system block 2 (index+memo), messages[near-end]
+- **Context compaction** — front half of history compressed via LLM when exceeding `max_context_tokens × compact_ratio`; circuit breaker drops oldest on repeated failures; `append_memo` tool extracts observations into long-term memory during compression
+- **Vision** — images downloaded, downscaled via pyvips, cached to disk, sent as base64 to Anthropic API; configurable per-message limit
+- **Stickers** — persistent library with SHA256 dedup; LLM can save/send stickers; Dream agent curates library
+- **Soul directory** — `soul/identity.md` (persona, `## 插话方式` section for proactive rules), `soul/instruction.md` (behavioral directives)
+- **Memory** — short-term: in-memory deque per session; long-term: `.qmd` files in `storage/memories/` with pending section auto-filled by compaction
+- **Usage tracking** — SQLite recording of all LLM calls (tokens, cache hits, latency); alerts admins on low cache hit rate or slow calls
 - **Config**: `BotConfig` (Pydantic) via `config_loader.py` — TOML < env vars < CLI args
 - **Ruff**: `pyproject.toml`, RUF001/RUF002/RUF003 ignored (Chinese full-width chars)
 - **Docker**: **always `docker compose restart napcat`**, never `down`+`up` (device fingerprint → anti-fraud)
