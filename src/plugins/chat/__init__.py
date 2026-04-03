@@ -337,6 +337,7 @@ async def collect_group_context(bot: Bot, event: GroupMessageEvent) -> None:
         role="user",
         speaker=f"{nickname}({event.user_id})",
         content=content,
+        message_id=event.message_id,
     )
 
     _scheduler.notify(group_id, is_at=event.is_tome())

@@ -82,18 +82,18 @@ async def test_record_failure_does_not_raise(tracker: UsageTracker, tmp_path) ->
 
 async def _insert_sample_data(tracker: UsageTracker) -> None:
     """Insert sample records for query tests."""
-    records = [
+    records: list[tuple[str, str | None, str | None, str, int, int, int, int, int, float]] = [
         ("chat", "111", None, "model-a", 100, 50, 10, 200, 1, 2.0),
         ("chat", "111", "999", "model-a", 150, 80, 20, 300, 2, 3.0),
         ("chat", "222", "999", "model-a", 200, 100, 30, 400, 0, 1.0),
         ("proactive", None, "999", "model-a", 50, 30, 5, 100, 0, 5.0),
         ("compact", "111", None, "model-a", 80, 0, 0, 50, 0, 1.5),
     ]
-    for r in records:
+    for ct, uid, gid, model, inp, cr, cc, out, tr, elapsed in records:
         await tracker.record(
-            call_type=r[0], user_id=r[1], group_id=r[2], model=r[3],
-            input_tokens=r[4], cache_read_tokens=r[5], cache_create_tokens=r[6],
-            output_tokens=r[7], tool_rounds=r[8], elapsed_s=r[9],
+            call_type=ct, user_id=uid, group_id=gid, model=model,
+            input_tokens=inp, cache_read_tokens=cr, cache_create_tokens=cc,
+            output_tokens=out, tool_rounds=tr, elapsed_s=elapsed,
         )
 
 
@@ -130,6 +130,14 @@ async def test_summary_month(tracker: UsageTracker) -> None:
 
 
 
+async def _record_low_hit(tracker: UsageTracker) -> None:
+    await tracker.record(
+        call_type="chat", user_id="1", group_id=None, model="m",
+        input_tokens=100, cache_read_tokens=10, cache_create_tokens=0,
+        output_tokens=50, tool_rounds=0, elapsed_s=1.0,
+    )
+
+
 async def test_alert_on_slow_call(tracker: UsageTracker) -> None:
     alert_fn = AsyncMock()
     tracker.set_alert(alert_fn=alert_fn, cache_hit_warn=90.0, slow_threshold_s=2.0)
@@ -153,17 +161,12 @@ async def test_alert_on_low_cache_hit(tracker: UsageTracker) -> None:
         output_tokens=10, tool_rounds=0, elapsed_s=1.0,
     )
     alert_fn.reset_mock()
-    low_hit_kwargs = dict(
-        call_type="chat", user_id="1", group_id=None, model="m",
-        input_tokens=100, cache_read_tokens=10, cache_create_tokens=0,
-        output_tokens=50, tool_rounds=0, elapsed_s=1.0,
-    )
     # First two low-hit calls: not enough samples yet (need 3)
-    await tracker.record(**low_hit_kwargs)
-    await tracker.record(**low_hit_kwargs)
+    await _record_low_hit(tracker)
+    await _record_low_hit(tracker)
     alert_fn.assert_not_called()
     # Third low-hit call triggers the alert
-    await tracker.record(**low_hit_kwargs)
+    await _record_low_hit(tracker)
     alert_fn.assert_called_once()
     msg = alert_fn.call_args[0][0].lower()
     assert "cache" in msg
@@ -227,18 +230,13 @@ async def test_cache_alert_cooldown(tracker: UsageTracker) -> None:
         input_tokens=100, cache_read_tokens=0, cache_create_tokens=100,
         output_tokens=10, tool_rounds=0, elapsed_s=1.0,
     )
-    low_hit = dict(
-        call_type="chat", user_id="1", group_id=None, model="m",
-        input_tokens=100, cache_read_tokens=10, cache_create_tokens=0,
-        output_tokens=50, tool_rounds=0, elapsed_s=1.0,
-    )
     # Fill window (3 calls) → first alert
     for _ in range(3):
-        await tracker.record(**low_hit)
+        await _record_low_hit(tracker)
     assert alert_fn.call_count == 1
     # More low-hit calls within cooldown → suppressed
     for _ in range(3):
-        await tracker.record(**low_hit)
+        await _record_low_hit(tracker)
     assert alert_fn.call_count == 1  # still just 1
 
 

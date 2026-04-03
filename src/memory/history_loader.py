@@ -67,10 +67,14 @@ async def _load_one_group(
         if not content:
             continue
 
+        msg_id = msg.get("message_id")
         if bot_self_id and user_id == bot_self_id:
             timeline.add(group_id, role="assistant", content=content)
         else:
-            timeline.add(group_id, role="user", speaker=f"{nickname}({user_id})", content=content)
+            timeline.add(
+                group_id, role="user", speaker=f"{nickname}({user_id})",
+                content=content, message_id=msg_id,
+            )
         loaded += 1
 
     elapsed_ms = (time.perf_counter() - t0) * 1000

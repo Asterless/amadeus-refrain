@@ -1,6 +1,6 @@
 """群聊统一时间线：合并 GroupContext 与群组的 ShortTermMemory。"""
 
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 
 from src.memory.types import Content, ContentBlock, TextBlock
 
@@ -11,6 +11,7 @@ class TimelineMessage(TypedDict):
     role: Literal["user", "assistant"]
     speaker: str | None  # user → "昵称(QQ号)", assistant → None
     content: Content
+    message_id: NotRequired[int | None]  # QQ message_id for reply references
 
 
 def _merge_user_contents(batch: list[TimelineMessage]) -> Content:
@@ -25,15 +26,19 @@ def _merge_user_contents(batch: list[TimelineMessage]) -> Content:
         lines: list[str] = []
         for m in batch:
             assert isinstance(m["content"], str)
+            mid = m.get("message_id")
+            tag = f"[msgid:{mid}] " if mid is not None else ""
             if m["speaker"] is not None:
-                lines.append(f"{m['speaker']}: {m['content']}")
+                lines.append(f"{tag}{m['speaker']}: {m['content']}")
             else:
-                lines.append(m["content"])
+                lines.append(f"{tag}{m['content']}" if tag else m["content"])
         return "\n".join(lines)
 
     merged: list[ContentBlock] = []
     for m in batch:
-        prefix = f"{m['speaker']}: " if m["speaker"] is not None else ""
+        mid = m.get("message_id")
+        tag = f"[msgid:{mid}] " if mid is not None else ""
+        prefix = f"{tag}{m['speaker']}: " if m["speaker"] is not None else tag
         if isinstance(m["content"], str):
             merged.append(TextBlock(type="text", text=f"{prefix}{m['content']}"))
         else:
@@ -87,10 +92,14 @@ class GroupTimeline:
         role: Literal["user", "assistant"],
         content: Content,
         speaker: str | None = None,
+        message_id: int | None = None,
     ) -> None:
         """追加一条消息；由 compact 控制大小，不做硬截断。"""
         state = self._get_or_create(group_id)
-        state.messages.append(TimelineMessage(role=role, speaker=speaker, content=content))
+        msg = TimelineMessage(role=role, speaker=speaker, content=content)
+        if message_id is not None:
+            msg["message_id"] = message_id
+        state.messages.append(msg)
 
     def get_messages(self, group_id: str) -> list[TimelineMessage]:
         """返回原始消息列表的副本。"""
