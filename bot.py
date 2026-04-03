@@ -66,7 +66,7 @@ logger.info(
 logger.info("[NapCat] api_url={}", _c.napcat.api_url)
 logger.info("==================================")
 
-nonebot.init()
+nonebot.init(log_level="WARNING")
 
 driver = nonebot.get_driver()
 driver.register_adapter(OneBotV11Adapter)

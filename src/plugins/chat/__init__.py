@@ -358,6 +358,12 @@ async def collect_group_context(bot: Bot, event: GroupMessageEvent) -> None:
 
     nickname = event.sender.nickname or str(event.user_id)
     group_id = str(event.group_id)
+    preview = content if isinstance(content, str) else "".join(
+        b["text"] for b in content if isinstance(b, dict) and b.get("type") == "text"  # type: ignore[union-attr]
+    )
+    if len(preview) > 120:
+        preview = preview[:120] + "…"
+    logger.info("group={} {}({}) | {}", group_id, nickname, event.user_id, preview)
     _timeline.add(
         group_id,
         role="user",
