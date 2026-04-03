@@ -24,7 +24,7 @@ from src.tools.context import ToolContext
 from src.tools.registry import ToolRegistry
 
 MAX_TOOL_ROUNDS = 5
-_SEGMENT_SEP = "---"
+_SEGMENT_SEP = "---cut---"
 _SEGMENT_DELAY = 0.5  # seconds between segment sends
 _BLANK_LINE_RE = re.compile(r"\n{2,}")
 
