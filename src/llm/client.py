@@ -175,7 +175,7 @@ _PASS_TURN_TOOL: dict[str, Any] = {
 
 _COMPACT_MEMO_TOOL: dict[str, Any] = {
     "name": "append_memo",
-    "description": "向用户或群组的备忘录追加新观察。不要重复已有内容，只记新信息。",
+    "description": "向用户或群组的备忘录追加新观察（自动写入「待整理」区域）。不要重复已有内容，只记新信息。",
     "input_schema": {
         "type": "object",
         "properties": {
@@ -185,7 +185,7 @@ _COMPACT_MEMO_TOOL: dict[str, Any] = {
             },
             "note": {
                 "type": "string",
-                "description": "要追加的新观察（简短结论，不是流水账）",
+                "description": "要追加的新观察（一句话简短结论，系统自动加 bullet 前缀）",
             },
         },
         "required": ["id", "note"],
@@ -758,6 +758,7 @@ class LLMClient:
                     "去掉寒暄、重复内容和过程性细节。\n"
                     "2. 如果对话中出现了关于用户的新信息（性格、偏好、背景等），"
                     f"用 append_memo 工具追加到 user_{user_id}。"
+                    "每条 note 写一句话结论，系统会自动放入「待整理」区域。"
                     "没有新信息则不需要调用。\n"
                     "备忘录规则：只记新的印象和结论，不记流水账。\n"
                     "最终请输出纯摘要文本（不要加标题或格式）。"
@@ -837,7 +838,8 @@ class LLMClient:
                 "你是一个对话分析助手。请完成两个任务：\n"
                 "1. 将以下群聊记录压缩成简洁的中文摘要。保留关键信息。\n"
                 "2. 如果对话中出现了关于用户或群组的新信息（性格、偏好、关系、群氛围等），"
-                "用 append_memo 工具追加新观察。没有新信息则不需要调用。\n\n"
+                "用 append_memo 工具追加新观察。每条 note 写一句话结论，"
+                "系统会自动放入「待整理」区域。没有新信息则不需要调用。\n\n"
                 f"本群 ID: group_{group_id}\n"
                 f"出现的用户 ID: {', '.join(f'user_{uid}' for uid in seen_user_ids)}\n\n"
                 "备忘录规则：用 @QQ号 标注人物，#群号 标注群。QQ号是唯一身份标识，昵称不可信。\n"

@@ -350,11 +350,6 @@ async def collect_group_context(bot: Bot, event: GroupMessageEvent) -> None:
 private_chat = on_message(rule=to_me(), priority=10, block=True)
 
 
-async def _dream_llm_call(system_prompt: str) -> None:
-    """Placeholder Dream LLM call — will be fleshed out when Dream is fully integrated."""
-    logger.warning("dream LLM call is a STUB — dream consolidation is NOT running (prompt len={})", len(system_prompt))
-
-
 @private_chat.handle()
 async def handle_private_chat(bot: Bot, event: MessageEvent) -> None:
     if isinstance(event, GroupMessageEvent):
@@ -406,7 +401,7 @@ async def handle_private_chat(bot: Bot, event: MessageEvent) -> None:
             break
 
     if _dream_enabled:
-        await _dream.maybe_run(_dream_llm_call)
+        await _dream.maybe_run(_llm._call)
 
     if reply:
         await private_chat.finish(Message(reply))

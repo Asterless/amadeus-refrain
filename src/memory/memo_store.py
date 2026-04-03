@@ -19,6 +19,33 @@ _META_RE = re.compile(r"^<!--\s*updated:\s*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2})\s*\
 _USER_REF_RE = re.compile(r"@(\d+)")
 _GROUP_REF_RE = re.compile(r"#(\d+)")
 
+PENDING_HEADER = "## 待整理"
+
+USER_MEMO_TEMPLATE = """\
+@QQ号(昵称)
+身份: 职业/角色，注明自称还是已确认
+性格: 说话风格、行为特征
+关系: 与其他用户的关系
+备注:
+- 值得记录的事件或印象
+
+## 待整理"""
+
+GROUP_MEMO_TEMPLATE = """\
+### 成员
+- @QQ号(昵称): 角色/特征
+
+### 话题
+- 群内常见话题或重要讨论
+
+### 事件
+- 值得记录的群事件
+
+### 规矩
+- 群内约定或潜规则
+
+## 待整理"""
+
 
 @dataclass(frozen=True)
 class Memo:
@@ -296,16 +323,16 @@ class MemoStore:
         logger.debug(f"Wrote memo {id} from source={source!r}")
 
     async def append(self, id: str, note: str, source: str) -> None:
-        """Append a note to an existing memo (or create a new one).
+        """Append a note as a bullet item under the '## 待整理' section.
 
-        Unlike write(), this preserves existing content and adds the note at the end.
-        The combined content is still subject to max_chars truncation (from the front).
+        Creates the section if missing. Creates the memo if it doesn't exist.
+        The combined content is still subject to max_chars truncation.
         """
         self._check_started()
         existing = self._memos.get(id)
         if existing:
             body = existing.body.strip()
-            combined = f"{body}\n{note}"
+            combined = f"{body}\n- {note}" if PENDING_HEADER in body else f"{body}\n\n{PENDING_HEADER}\n- {note}"
         else:
-            combined = note
+            combined = f"{PENDING_HEADER}\n- {note}"
         await self.write(id, combined, source)

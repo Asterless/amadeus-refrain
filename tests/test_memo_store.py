@@ -202,3 +202,40 @@ async def test_full_lifecycle(tmp_path) -> None:
     mentioned_in_restart = store2.about("100")
     restart_ids = {m.id for m in mentioned_in_restart}
     assert "group_300" in restart_ids
+
+
+# ---------------------------------------------------------------------------
+# Append — pending section
+# ---------------------------------------------------------------------------
+
+
+async def test_append_creates_pending_section(store: MemoStore) -> None:
+    """append() on a memo without 待整理 creates the section."""
+    await store.startup()
+    await store.write("user_100", "@100(测试)\n身份: 学生", "test")
+    await store.append("user_100", "喜欢打篮球", "compact:private:user_100")
+    memo = store.read("user_100")
+    assert memo is not None
+    assert "## 待整理" in memo.body
+    assert "- 喜欢打篮球" in memo.body
+
+
+async def test_append_adds_to_existing_pending(store: MemoStore) -> None:
+    """Second append() adds a new bullet to the existing 待整理 section."""
+    await store.startup()
+    await store.write("user_100", "@100(测试)\n\n## 待整理\n- 第一条", "test")
+    await store.append("user_100", "第二条", "compact:private:user_100")
+    memo = store.read("user_100")
+    assert memo is not None
+    assert "- 第一条" in memo.body
+    assert "- 第二条" in memo.body
+
+
+async def test_append_new_memo_creates_pending(store: MemoStore) -> None:
+    """append() on a non-existent memo creates it with just a 待整理 section."""
+    await store.startup()
+    await store.append("user_200", "新用户观察", "compact:private:user_200")
+    memo = store.read("user_200")
+    assert memo is not None
+    assert "## 待整理" in memo.body
+    assert "- 新用户观察" in memo.body
