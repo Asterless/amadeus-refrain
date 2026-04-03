@@ -24,9 +24,15 @@ from src.tools.context import ToolContext
 from src.tools.registry import ToolRegistry
 
 MAX_TOOL_ROUNDS = 5
+_RATE_LIMIT_MAX_RETRIES = 3
+_RATE_LIMIT_BASE_DELAY = 5.0  # seconds
 _SEGMENT_SEP = "---cut---"
 _SEGMENT_DELAY = 0.5  # seconds between segment sends
 _BLANK_LINE_RE = re.compile(r"\n{2,}")
+
+
+class RateLimitError(RuntimeError):
+    """Raised when the Anthropic API returns a rate-limit error."""
 
 
 def _clean_text(text: str) -> str:
@@ -195,6 +201,9 @@ async def _call_api(
     usage: dict[str, int] = {}
 
     async with session.post(f"{base_url}/v1/messages", json=body, headers=headers) as resp:
+        if resp.status == 429:
+            body_text = await resp.text()
+            raise RateLimitError(f"HTTP 429: {body_text}")
         resp.raise_for_status()
         async for raw_line in resp.content:
             line = raw_line.decode().strip()
@@ -231,6 +240,8 @@ async def _call_api(
             elif event_type == "error":
                 error_data = data.get("error", {})
                 error_msg = error_data.get("message", str(data))
+                if "rate limit" in error_msg.lower():
+                    raise RateLimitError(f"Anthropic API stream error: {error_msg}")
                 raise RuntimeError(f"Anthropic API stream error: {error_msg}")
 
     # Token stats

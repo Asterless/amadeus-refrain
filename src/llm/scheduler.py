@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from loguru import logger
 
+from src.llm.client import _RATE_LIMIT_BASE_DELAY, _RATE_LIMIT_MAX_RETRIES, RateLimitError
 from src.memory.group_timeline import GroupTimeline
 from src.tools.context import ToolContext
 
@@ -158,25 +159,42 @@ class GroupChatScheduler:
     async def _do_chat(self, group_id: str) -> None:
         slot = self._slots.get(group_id)
         try:
-            identity = self._identity_mgr.resolve()
-            session_id = f"group_{group_id}"
-            ctx = ToolContext(bot=self._bot, user_id="", group_id=group_id)
+            for attempt in range(_RATE_LIMIT_MAX_RETRIES + 1):
+                try:
+                    identity = self._identity_mgr.resolve()
+                    session_id = f"group_{group_id}"
+                    ctx = ToolContext(bot=self._bot, user_id="", group_id=group_id)
 
-            async def on_segment(text: str) -> None:
-                await self._send_to_group(group_id, text)
+                    async def on_segment(text: str) -> None:
+                        await self._send_to_group(group_id, text)
 
-            reply = await self._llm.chat(
-                session_id=session_id,
-                user_id="",
-                user_content="",
-                identity=identity,
-                group_id=group_id,
-                ctx=ctx,
-                on_segment=on_segment if self._bot else None,
-            )
+                    reply = await self._llm.chat(
+                        session_id=session_id,
+                        user_id="",
+                        user_content="",
+                        identity=identity,
+                        group_id=group_id,
+                        ctx=ctx,
+                        on_segment=on_segment if self._bot else None,
+                    )
 
-            if reply:
-                await self._send_to_group(group_id, reply)
+                    if reply:
+                        await self._send_to_group(group_id, reply)
+                    return
+
+                except RateLimitError:
+                    if attempt >= _RATE_LIMIT_MAX_RETRIES:
+                        logger.error(
+                            "scheduler | group={} rate limit exhausted after {} retries",
+                            group_id, _RATE_LIMIT_MAX_RETRIES,
+                        )
+                        return
+                    delay = _RATE_LIMIT_BASE_DELAY * (2 ** attempt)
+                    logger.warning(
+                        "scheduler | group={} rate limited, retry {}/{} in {:.0f}s (will include new messages)",
+                        group_id, attempt + 1, _RATE_LIMIT_MAX_RETRIES, delay,
+                    )
+                    await asyncio.sleep(delay)
 
         except asyncio.CancelledError:
             logger.debug("scheduler | group={} chat cancelled", group_id)

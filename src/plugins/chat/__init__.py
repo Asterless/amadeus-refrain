@@ -13,7 +13,12 @@ from nonebot.rule import to_me
 from src.config_loader import load_config
 from src.constants.qq_face import face_to_text
 from src.identity import IdentityManager
-from src.llm.client import LLMClient
+from src.llm.client import (
+    _RATE_LIMIT_BASE_DELAY,
+    _RATE_LIMIT_MAX_RETRIES,
+    LLMClient,
+    RateLimitError,
+)
 from src.llm.dream import DreamAgent
 from src.llm.prompt import PromptBuilder, load_instruction
 from src.llm.scheduler import GroupChatScheduler
@@ -368,19 +373,34 @@ async def handle_private_chat(bot: Bot, event: MessageEvent) -> None:
     async def send_segment(text: str) -> None:
         await bot.send(event, Message(text))
 
-    try:
-        reply = await _llm.chat(
-            session_id=sid,
-            user_id=str(event.user_id),
-            user_content=user_content,
-            identity=identity,
-            group_id=None,
-            ctx=ctx,
-            on_segment=send_segment,
-        )
-    except Exception:
-        logger.exception("chat error")
-        reply = "出错了，请稍后再试"
+    reply: str | None = None
+    for attempt in range(_RATE_LIMIT_MAX_RETRIES + 1):
+        try:
+            reply = await _llm.chat(
+                session_id=sid,
+                user_id=str(event.user_id),
+                user_content=user_content,
+                identity=identity,
+                group_id=None,
+                ctx=ctx,
+                on_segment=send_segment,
+            )
+            break
+        except RateLimitError:
+            if attempt >= _RATE_LIMIT_MAX_RETRIES:
+                logger.error("private chat rate limit exhausted after {} retries", _RATE_LIMIT_MAX_RETRIES)
+                reply = "当前请求太多，请稍后再试"
+                break
+            delay = _RATE_LIMIT_BASE_DELAY * (2 ** attempt)
+            logger.warning(
+                "private chat rate limited, retry {}/{} in {:.0f}s",
+                attempt + 1, _RATE_LIMIT_MAX_RETRIES, delay,
+            )
+            await asyncio.sleep(delay)
+        except Exception:
+            logger.exception("chat error")
+            reply = "出错了，请稍后再试"
+            break
 
     if _dream_enabled:
         await _dream.maybe_run(_dream_llm_call)
