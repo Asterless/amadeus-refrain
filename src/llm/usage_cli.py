@@ -24,24 +24,47 @@ def _fmt_tokens(n: int) -> str:
     return str(n)
 
 
-def _cache_hit_pct(data: dict[str, Any]) -> str:
+def _cache_hit_pct(data: dict[str, Any]) -> float | None:
+    """Return cache hit rate as a float in [0, 100], or None if no data."""
     total = data.get("total_input_tokens", 0)
     if total == 0:
-        return "n/a"
-    return f"{data.get('cache_read_tokens', 0) / total * 100:.0f}%"
+        return None
+    return min(100.0, max(0.0, data.get("cache_read_tokens", 0) / total * 100))
 
 
 def _print_summary(title: str, data: dict[str, Any]) -> None:
     print(f"\n=== {title} ===")
     print(f"  Total calls:      {data.get('total_calls', 0)}")
 
-    print(f"  Input tokens:     {_fmt_tokens(data.get('total_input_tokens', 0))}")
-    print(f"    Non-cached:     {_fmt_tokens(data.get('input_tokens', 0))}")
-    print(f"    Cache read:     {_fmt_tokens(data.get('cache_read_tokens', 0))}")
-    print(f"    Cache create:   {_fmt_tokens(data.get('cache_create_tokens', 0))}")
-    print(f"  Cache hit rate:   {_cache_hit_pct(data)}")
+    total_in = data.get("total_input_tokens", 0)
+    inp = data.get("input_tokens", 0)
+    cache_read = data.get("cache_read_tokens", 0)
+    cache_create = data.get("cache_create_tokens", 0)
+    hit_rate = _cache_hit_pct(data)
+
+    print(f"  Input tokens:     {_fmt_tokens(total_in)}")
+    print(f"    Non-cached:     {_fmt_tokens(inp)}")
+    print(f"    Cache read:     {_fmt_tokens(cache_read)}")
+    print(f"    Cache create:   {_fmt_tokens(cache_create)}")
+    print(f"  Cache hit rate:   {'n/a' if hit_rate is None else f'{hit_rate:.0f}%'}")
     print(f"  Output tokens:    {_fmt_tokens(data.get('total_output_tokens', 0))}")
 
+    # Cache hit rate detail
+    print()
+    print("  --- Cache Hit Rate Detail ---")
+    if hit_rate is None:
+        print("    (no input tokens)")
+    else:
+        non_cached_pct = min(100.0, max(0.0, inp / total_in * 100)) if total_in else 0.0
+        create_pct = min(100.0, max(0.0, cache_create / total_in * 100)) if total_in else 0.0
+        cr_str = _fmt_tokens(cache_read)
+        ti_str = _fmt_tokens(total_in)
+        print(f"    hit rate = cache_read / total_input = {cr_str} / {ti_str} = {hit_rate:.1f}%")
+        print(f"    Non-cached:   {_fmt_tokens(inp):>8}  ({non_cached_pct:.1f}%)")
+        print(f"    Cache read:   {_fmt_tokens(cache_read):>8}  ({hit_rate:.1f}%)  <- hit rate")
+        print(f"    Cache create: {_fmt_tokens(cache_create):>8}  ({create_pct:.1f}%)")
+
+    print()
     print(f"  Chat calls:       {data.get('chat_calls', 0)}")
     print(f"  Proactive:        {data.get('proactive_calls', 0)}")
     print(f"  Compact:          {data.get('compact_calls', 0)}")

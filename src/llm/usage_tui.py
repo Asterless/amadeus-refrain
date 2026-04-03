@@ -594,6 +594,7 @@ def render_cost_table(model_usage: list[dict[str, Any]]) -> Table:
     table.add_column("Cache Read", justify="right")
     table.add_column("Cache Write", justify="right")
     table.add_column("Output", justify="right")
+    table.add_column("Hit%", justify="right")
     table.add_column("Cost", justify="right", style="bold green")
 
     total_cost = 0.0
@@ -612,6 +613,12 @@ def render_cost_table(model_usage: list[dict[str, Any]]) -> Table:
         total_cost += cost
         total_calls += calls
 
+        model_total_in = inp + cr + cw
+        hit_pct = (
+            f"{min(100.0, max(0.0, cr / model_total_in * 100)):.0f}%"
+            if model_total_in > 0 else "n/a"
+        )
+
         table.add_row(
             model,
             str(calls),
@@ -619,13 +626,14 @@ def render_cost_table(model_usage: list[dict[str, Any]]) -> Table:
             _token_cell(cr, p_cr),
             _token_cell(cw, p_cw),
             _token_cell(out, p_out),
+            hit_pct,
             _fmt_cost(cost),
         )
 
     table.add_section()
     table.add_row(
         "Total", str(total_calls),
-        "", "", "", "",
+        "", "", "", "", "",
         _fmt_cost(total_cost),
         style="bold",
     )
@@ -699,7 +707,7 @@ def render_dashboard(
             input_tokens.append(float(total_in))
             output_tokens.append(float(out))
             if total_in > 0:
-                cache_hit_pcts.append(cr / total_in * 100)
+                cache_hit_pcts.append(min(100.0, max(0.0, cr / total_in * 100)))
             else:
                 cache_hit_pcts.append(None)
         else:
@@ -723,9 +731,13 @@ def render_dashboard(
     cache_read = summary.get("cache_read_tokens", 0)
     avg_s = summary.get("avg_elapsed_s", 0)
 
-    cache_pct_str = "n/a"
+    cache_create = summary.get("cache_create_tokens", 0)
+    input_only = summary.get("input_tokens", 0)
+
+    cache_pct: float | None = None
     if total_input > 0:
-        cache_pct_str = f"{cache_read / total_input * 100:.0f}%"
+        cache_pct = min(100.0, max(0.0, cache_read / total_input * 100))
+    cache_pct_str = "n/a" if cache_pct is None else f"{cache_pct:.0f}%"
 
     summary_text = (
         f"Calls: {total_calls} \u2502 "
@@ -734,7 +746,20 @@ def render_dashboard(
         f"Cache hit: {cache_pct_str} \u2502 "
         f"Avg: {avg_s:.1f}s"
     )
-    result.append(summary_text + "\n\n")
+    result.append(summary_text + "\n")
+
+    # Cache hit rate detail
+    if cache_pct is not None:
+        non_cached_pct = min(100.0, max(0.0, input_only / total_input * 100))
+        create_pct = min(100.0, max(0.0, cache_create / total_input * 100))
+        detail = (
+            f"  Cache detail: "
+            f"non-cached {_fmt_axis_label(float(input_only))} ({non_cached_pct:.0f}%) | "
+            f"read {_fmt_axis_label(float(cache_read))} ({cache_pct:.0f}%) | "
+            f"create {_fmt_axis_label(float(cache_create))} ({create_pct:.0f}%)"
+        )
+        result.append(detail + "\n", style="dim")
+    result.append("\n")
 
     # Pre-compute max Y-axis width so all charts align vertically
     stacked_totals = [i + o for i, o in zip(input_tokens, output_tokens, strict=True)]

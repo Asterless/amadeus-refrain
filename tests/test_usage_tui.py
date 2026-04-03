@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from src.llm.usage import UsageTracker
+from src.llm.usage_cli import _cache_hit_pct
 from src.llm.usage_tui import (
     _local_tz_offset_hours,
     _nice_ticks,
@@ -139,6 +140,23 @@ def test_render_line_chart_with_nones() -> None:
     assert result.plain.strip() != ""
 
 
+def test_cache_hit_pct_clamps_to_0_100() -> None:
+    # Normal case
+    data = {"total_input_tokens": 1000, "cache_read_tokens": 800}
+    assert _cache_hit_pct(data) == pytest.approx(80.0)
+
+    # Anomalous data: cache_read > total (should clamp to 100)
+    data = {"total_input_tokens": 500, "cache_read_tokens": 600}
+    assert _cache_hit_pct(data) == 100.0
+
+    # Zero total → None
+    assert _cache_hit_pct({"total_input_tokens": 0, "cache_read_tokens": 0}) is None
+
+    # Negative (shouldn't happen but guard) → 0
+    data = {"total_input_tokens": 100, "cache_read_tokens": -10}
+    assert _cache_hit_pct(data) == 0.0
+
+
 def test_render_dashboard() -> None:
     all_buckets = [f"{h:02d}" for h in range(24)]
     timeseries = [
@@ -159,6 +177,8 @@ def test_render_dashboard() -> None:
             "total_input_tokens": 500000,
             "total_output_tokens": 80000,
             "cache_read_tokens": 400000,
+            "cache_create_tokens": 20000,
+            "input_tokens": 80000,
             "avg_elapsed_s": 3.5,
         },
         timeseries=timeseries,
@@ -169,6 +189,8 @@ def test_render_dashboard() -> None:
     assert "calls" in text
     assert "tokens" in text
     assert "cache hit" in text
+    # Cache detail line should be present
+    assert "cache detail" in text
 
 
 # ---------------------------------------------------------------------------
