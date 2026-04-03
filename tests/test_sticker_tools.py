@@ -317,7 +317,7 @@ async def test_send_sticker_no_bot(store: StickerStore) -> None:
 
     result = await tool.execute(ctx, sticker_id=stk_id)
 
-    assert "Bot 不可用" == result
+    assert result == "Bot 不可用"
 
 
 # ---------------------------------------------------------------------------

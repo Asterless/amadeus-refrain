@@ -10,10 +10,13 @@ Cache layout (4 breakpoints):
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from src.identity.models import Identity
 from src.memory.memo_store import MemoStore
+
+if TYPE_CHECKING:
+    from src.sticker.store import StickerStore
 
 
 def load_instruction(soul_dir: str) -> str:
@@ -25,9 +28,15 @@ def load_instruction(soul_dir: str) -> str:
 
 
 class PromptBuilder:
-    def __init__(self, instruction: str = "", admins: dict[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        instruction: str = "",
+        admins: dict[str, str] | None = None,
+        sticker_store: StickerStore | None = None,
+    ) -> None:
         self._instruction = instruction
         self._admins = admins or {}
+        self._sticker_store = sticker_store
         self._static_block: dict[str, Any] = {}
 
     @property
@@ -79,6 +88,9 @@ class PromptBuilder:
             memo = memo_store.read(f"user_{user_id}")
             body = memo.body if memo else ""
             text += f"\n\n【当前私聊 @{user_id}】\n{body}"
+
+        if self._sticker_store is not None:
+            text += f"\n\n{self._sticker_store.format_prompt_view()}"
 
         entity_block = {
             "type": "text",
