@@ -75,17 +75,15 @@ def test_group_isolation(group_timeline: GroupTimeline) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_max_messages_eviction() -> None:
-    tl = GroupTimeline(max_messages=3)
-    tl.add("g1", role="user", content="msg1", speaker="A(1)")
-    tl.add("g1", role="user", content="msg2", speaker="A(1)")
-    tl.add("g1", role="user", content="msg3", speaker="A(1)")
-    tl.add("g1", role="user", content="msg4", speaker="A(1)")
-
+def test_add_accumulates_without_limit() -> None:
+    """Messages accumulate without hard eviction — compact controls size."""
+    tl = GroupTimeline()
+    for i in range(500):
+        tl.add("g1", role="user", content=f"msg{i}", speaker=f"A({i})")
     msgs = tl.get_messages("g1")
-    assert len(msgs) == 3
-    assert msgs[0]["content"] == "msg2"
-    assert msgs[-1]["content"] == "msg4"
+    assert len(msgs) == 500
+    assert msgs[0]["content"] == "msg0"
+    assert msgs[499]["content"] == "msg499"
 
 
 # ---------------------------------------------------------------------------

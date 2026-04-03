@@ -39,7 +39,7 @@ def tools() -> ToolRegistry:
 
 @pytest.fixture
 def timeline() -> GroupTimeline:
-    return GroupTimeline(max_messages=200)
+    return GroupTimeline()
 
 
 @pytest.fixture

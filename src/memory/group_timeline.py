@@ -49,10 +49,9 @@ def _merge_user_contents(batch: list[TimelineMessage]) -> Content:
 
 
 class _GroupState:
-    __slots__ = ("_max", "last_cached_msg_index", "last_input_tokens", "messages", "summary")
+    __slots__ = ("last_cached_msg_index", "last_input_tokens", "messages", "summary")
 
-    def __init__(self, max_messages: int) -> None:
-        self._max = max_messages
+    def __init__(self) -> None:
         self.messages: list[TimelineMessage] = []
         self.summary: str = ""
         self.last_input_tokens: int = 0
@@ -62,8 +61,7 @@ class _GroupState:
 class GroupTimeline:
     """群聊统一时间线，兼具上下文记录与 compact 能力。"""
 
-    def __init__(self, max_messages: int = 50) -> None:
-        self._max = max_messages
+    def __init__(self) -> None:
         self._store: dict[str, _GroupState] = {}
 
     # ------------------------------------------------------------------
@@ -75,7 +73,7 @@ class GroupTimeline:
             if len(self._store) >= _MAX_GROUPS:
                 oldest = next(iter(self._store))
                 del self._store[oldest]
-            self._store[group_id] = _GroupState(self._max)
+            self._store[group_id] = _GroupState()
         return self._store[group_id]
 
     # ------------------------------------------------------------------
@@ -90,11 +88,9 @@ class GroupTimeline:
         content: Content,
         speaker: str | None = None,
     ) -> None:
-        """追加一条消息；超出上限时淘汰最旧的消息。"""
+        """追加一条消息；由 compact 控制大小，不做硬截断。"""
         state = self._get_or_create(group_id)
         state.messages.append(TimelineMessage(role=role, speaker=speaker, content=content))
-        if len(state.messages) > state._max:
-            state.messages = state.messages[-state._max :]
 
     def get_messages(self, group_id: str) -> list[TimelineMessage]:
         """返回原始消息列表的副本。"""

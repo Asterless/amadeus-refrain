@@ -11,4 +11,4 @@ def short_term() -> ShortTermMemory:
 
 @pytest.fixture
 def group_timeline() -> GroupTimeline:
-    return GroupTimeline(max_messages=50)
+    return GroupTimeline()
