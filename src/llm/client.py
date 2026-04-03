@@ -725,7 +725,10 @@ class LLMClient:
     async def _compact(self, session_id: str) -> None:
         """Compress first half of history into summary and extract user memo."""
         if self._private_compact_failures >= self._max_compact_failures:
-            logger.warning("compact circuit breaker active | session={}", session_id)
+            history = self._short_term.get(session_id)
+            drop = max(2, int(len(history) * self._compress_ratio))
+            self._short_term.drop_oldest(session_id, drop)
+            logger.warning("compact circuit breaker active, dropped {} msgs | session={}", drop, session_id)
             return
 
         try:
@@ -797,7 +800,11 @@ class LLMClient:
     async def _compact_group(self, group_id: str, identity: Identity) -> None:
         """Compress first half of group timeline into summary and extract memos."""
         if self._group_compact_failures >= self._max_compact_failures:
-            logger.warning("compact circuit breaker active | group={}", group_id)
+            assert self._timeline is not None
+            messages = self._timeline.get_messages(group_id)
+            drop = max(2, int(len(messages) * self._compress_ratio))
+            self._timeline.drop_oldest(group_id, drop)
+            logger.warning("compact circuit breaker active, dropped {} msgs | group={}", drop, group_id)
             return
 
         try:
