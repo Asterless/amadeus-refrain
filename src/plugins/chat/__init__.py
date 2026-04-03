@@ -36,6 +36,7 @@ from src.tools.group_admin import MuteUserTool, SendGroupMsgTool, SetTitleTool
 from src.tools.http_api import HttpApiTool
 from src.tools.memo_tools import RecallMemoTool, UpdateMemoTool
 from src.tools.web_fetch import WebFetchTool
+from src.tools.web_search import WebSearchTool
 
 driver = get_driver()
 
@@ -94,6 +95,7 @@ async def _init() -> None:
     tools.register(UpdateMemoTool(memo_store))
     tools.register(DateTimeTool())
     tools.register(WebFetchTool())
+    tools.register(WebSearchTool())
     tools.register(HttpApiTool())
     tools.register(MuteUserTool(superusers))
     tools.register(SetTitleTool(superusers))

@@ -7,6 +7,7 @@ from src.tools.datetime_tool import DateTimeTool
 from src.tools.group_admin import MuteUserTool
 from src.tools.registry import ToolRegistry
 from src.tools.web_fetch import _is_safe_url
+from src.tools.web_search import WebSearchTool
 
 # ── SSRF 校验 ──
 
@@ -104,3 +105,60 @@ async def test_registry_bad_arguments() -> None:
     ctx = ToolContext(user_id="123")
     result = await registry.call("get_datetime", "not-json", ctx)
     assert "工具执行出错" in result
+
+
+# ── WebSearchTool ──
+
+
+async def test_web_search_formats_results(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_results = [
+        {"title": "Result 1", "href": "https://example.com/1", "body": "Snippet 1"},
+        {"title": "Result 2", "href": "https://example.com/2", "body": "Snippet 2"},
+    ]
+    monkeypatch.setattr(
+        "src.tools.web_search._ddg_search_sync",
+        lambda q, n: fake_results,
+    )
+    tool = WebSearchTool()
+    ctx = ToolContext(user_id="123")
+    result = await tool.execute(ctx, query="test")
+    assert "Result 1" in result
+    assert "https://example.com/1" in result
+    assert "Result 2" in result
+    assert "1." in result and "2." in result
+
+
+async def test_web_search_empty_results(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "src.tools.web_search._ddg_search_sync",
+        lambda q, n: [],
+    )
+    tool = WebSearchTool()
+    ctx = ToolContext(user_id="123")
+    result = await tool.execute(ctx, query="nonexistent gibberish xyz")
+    assert "未找到" in result
+
+
+async def test_web_search_error_handling(monkeypatch: pytest.MonkeyPatch) -> None:
+    def raise_error(q: str, n: int) -> list:
+        raise RuntimeError("network error")
+
+    monkeypatch.setattr("src.tools.web_search._ddg_search_sync", raise_error)
+    tool = WebSearchTool()
+    ctx = ToolContext(user_id="123")
+    result = await tool.execute(ctx, query="test")
+    assert "搜索失败" in result
+
+
+async def test_web_search_max_results_capped(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, int] = {}
+
+    def capture_n(q: str, n: int) -> list:
+        captured["n"] = n
+        return []
+
+    monkeypatch.setattr("src.tools.web_search._ddg_search_sync", capture_n)
+    tool = WebSearchTool()
+    ctx = ToolContext(user_id="123")
+    await tool.execute(ctx, query="test", max_results=99)
+    assert captured["n"] == 10
