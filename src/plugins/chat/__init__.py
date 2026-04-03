@@ -78,7 +78,7 @@ async def _init() -> None:
     )
     await memo_store.startup()
     _short_term = ShortTermMemory()
-    _timeline = GroupTimeline(max_messages=bot_config.group.max_timeline_messages)
+    _timeline = GroupTimeline()
     instruction = load_instruction(bot_config.soul.dir)
     short_term = _short_term
 
@@ -124,8 +124,8 @@ async def _init() -> None:
         short_term=short_term,
         tools=tools,
         max_context_tokens=bot_config.llm.context.max_context_tokens,
-        micro_ratio=bot_config.compact.micro_ratio,
-        full_ratio=bot_config.compact.full_ratio,
+        compact_ratio=bot_config.compact.ratio,
+        compress_ratio=bot_config.compact.compress_ratio,
         max_compact_failures=bot_config.compact.max_failures,
         group_timeline=_timeline,
         memo_store=memo_store,

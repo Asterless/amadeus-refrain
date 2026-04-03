@@ -42,16 +42,16 @@ logger.info(
     _c.llm.model, _c.llm.base_url, _c.llm.max_tokens,
 )
 logger.info(
-    "[Context] max_tokens={} micro_ratio={} full_ratio={}",
-    _c.llm.context.max_context_tokens, _c.compact.micro_ratio, _c.compact.full_ratio,
+    "[Context] max_tokens={} compact_ratio={} compress_ratio={}",
+    _c.llm.context.max_context_tokens, _c.compact.ratio, _c.compact.compress_ratio,
 )
 logger.info(
     "[Group] debounce={:.1f}s batch_size={}",
     _c.group.debounce_seconds, _c.group.batch_size,
 )
 logger.info(
-    "[Group] timeline={} history_load={} allowed={}",
-    _c.group.max_timeline_messages, _c.group.history_load_count,
+    "[Group] history_load={} allowed={}",
+    _c.group.history_load_count,
     _c.group.allowed_groups or "无限制",
 )
 logger.info(
