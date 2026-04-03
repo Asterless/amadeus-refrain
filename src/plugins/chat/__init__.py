@@ -29,12 +29,14 @@ from src.memory.image_cache import ImageCache
 from src.memory.memo_store import MemoStore
 from src.memory.short_term import ShortTermMemory
 from src.memory.types import Content, ContentBlock, ImageRefBlock, TextBlock
+from src.sticker.store import StickerStore
 from src.tools import ToolRegistry
 from src.tools.context import ToolContext
 from src.tools.datetime_tool import DateTimeTool
 from src.tools.group_admin import MuteUserTool, SendGroupMsgTool, SetTitleTool
 from src.tools.http_api import HttpApiTool
 from src.tools.memo_tools import RecallMemoTool, UpdateMemoTool
+from src.tools.sticker_tools import SaveStickerTool, SendStickerTool
 from src.tools.web_fetch import WebFetchTool
 from src.tools.web_search import WebSearchTool
 
@@ -53,13 +55,14 @@ _allowed_private_users: set[int] = set()
 _image_cache: ImageCache
 _vision_enabled: bool = True
 _max_images_per_message: int = 5
+_sticker_store: StickerStore | None = None
 
 
 @driver.on_startup
 async def _init() -> None:
     global _llm, _dream, _dream_enabled, _scheduler, _identity_mgr, _usage_tracker
     global _timeline, _short_term, _allowed_groups, _allowed_private_users
-    global _image_cache, _vision_enabled, _max_images_per_message
+    global _image_cache, _vision_enabled, _max_images_per_message, _sticker_store
 
     bot_config = load_config()
     _allowed_groups = set(bot_config.group.allowed_groups)
@@ -74,6 +77,12 @@ async def _init() -> None:
 
     # Cleanup stale cache on startup
     await _image_cache.cleanup(max_age=timedelta(hours=bot_config.vision.cache_max_age_hours))
+
+    if bot_config.sticker.enabled:
+        _sticker_store = StickerStore(
+            storage_dir=bot_config.sticker.storage_dir,
+            max_count=bot_config.sticker.max_count,
+        )
 
     memo_store = MemoStore(
         base_dir=bot_config.memo.dir,
@@ -100,13 +109,20 @@ async def _init() -> None:
     tools.register(MuteUserTool(superusers))
     tools.register(SetTitleTool(superusers))
     tools.register(SendGroupMsgTool(superusers))
+    if _sticker_store is not None:
+        tools.register(SaveStickerTool(_sticker_store, superusers))
+        tools.register(SendStickerTool(_sticker_store))
 
     _identity_mgr = IdentityManager()
     soul_dir = bot_config.soul.dir
     await _identity_mgr.load_file(f"{soul_dir}/identity.md")
 
     identity = _identity_mgr.resolve()
-    prompt_builder = PromptBuilder(instruction=instruction, admins=bot_config.admins)
+    prompt_builder = PromptBuilder(
+        instruction=instruction,
+        admins=bot_config.admins,
+        sticker_store=_sticker_store,
+    )
     prompt_builder.build_static(identity, bot_self_id="")
 
     _dream_enabled = bot_config.dream.enabled
