@@ -475,12 +475,22 @@ class LLMClient:
             assert self._timeline is not None
             # Group: messages already added to timeline by group_listener
             if self._timeline.needs_compact(group_id, self._max_context_tokens, self._compact_ratio):
+                logger.info(
+                    "compact triggering | group={} input_tokens={} threshold={}",
+                    group_id, self._timeline.get_input_tokens(group_id),
+                    int(self._max_context_tokens * self._compact_ratio),
+                )
                 await self._compact_group(group_id, identity)
             messages = self._build_group_messages(group_id)
         else:
             # Private: use ShortTermMemory
             self._short_term.add(session_id, "user", user_content)
             if self._short_term.needs_compact(session_id, self._max_context_tokens, self._compact_ratio):
+                logger.info(
+                    "compact triggering | session={} input_tokens={} threshold={}",
+                    session_id, self._short_term.get_input_tokens(session_id),
+                    int(self._max_context_tokens * self._compact_ratio),
+                )
                 await self._compact(session_id)
             messages = self._build_private_messages(session_id)
 
@@ -636,10 +646,10 @@ class LLMClient:
         messages: list[dict[str, Any]],
         source: str,
         group_id: str | None,
-    ) -> str:
+    ) -> tuple[str, int]:
         """Run a compact LLM call with an update_memo tool loop.
 
-        Returns the summary text. Memo writes happen via tool calls.
+        Returns (summary_text, memo_writes).
         """
         tools: list[dict[str, Any]] | None = None
         if self._memo_store:
@@ -671,7 +681,7 @@ class LLMClient:
                     cache_create_tokens=acc_cache_create, output_tokens=acc_output,
                     tool_rounds=round_i, elapsed_s=0.0,
                 )
-                return text
+                return text, memo_writes
 
             # Build assistant message with text + tool_use blocks
             assistant_content: list[dict[str, Any]] = []
@@ -720,7 +730,7 @@ class LLMClient:
             cache_create_tokens=acc_cache_create, output_tokens=acc_output,
             tool_rounds=_MAX_COMPACT_TOOL_ROUNDS, elapsed_s=0.0,
         )
-        return result["text"].strip()
+        return result["text"].strip(), memo_writes
 
     async def _compact(self, session_id: str) -> None:
         """Compress first half of history into summary and extract user memo."""
@@ -776,11 +786,19 @@ class LLMClient:
 
             logger.info("compact | session={} split={}/{}", session_id, split, len(history))
             source = f"compact:private:{session_id}"
-            new_summary = await self._compact_with_tools(system, compress_messages, source, group_id=None)
+            t_compact = time.monotonic()
+            new_summary, memo_writes = await self._compact_with_tools(
+                system, compress_messages, source, group_id=None,
+            )
+            compact_elapsed = time.monotonic() - t_compact
 
             if new_summary:
                 self._short_term.compact(session_id, split, new_summary)
-                logger.info("compact done | session={} summary_len={}", session_id, len(new_summary))
+                logger.info(
+                    "compact done | session={} messages={}->{} summary_len={} memo_writes={} elapsed={:.1f}s",
+                    session_id, len(history), len(history) - split,
+                    len(new_summary), memo_writes, compact_elapsed,
+                )
             else:
                 logger.warning("compact produced empty summary | session={}", session_id)
 
@@ -857,11 +875,19 @@ class LLMClient:
 
             logger.info("compact_group | group={} split={}/{}", group_id, split, len(messages))
             source = f"compact:group:{group_id}"
-            new_summary = await self._compact_with_tools(system, compress_messages, source, group_id=group_id)
+            t_compact = time.monotonic()
+            new_summary, memo_writes = await self._compact_with_tools(
+                system, compress_messages, source, group_id=group_id,
+            )
+            compact_elapsed = time.monotonic() - t_compact
 
             if new_summary:
                 self._timeline.compact(group_id, split, new_summary)
-                logger.info("compact_group done | group={} summary_len={}", group_id, len(new_summary))
+                logger.info(
+                    "compact_group done | group={} messages={}->{} summary_len={} memo_writes={} elapsed={:.1f}s",
+                    group_id, len(messages), len(messages) - split,
+                    len(new_summary), memo_writes, compact_elapsed,
+                )
             else:
                 logger.warning("compact_group produced empty summary | group={}", group_id)
 
