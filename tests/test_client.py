@@ -65,8 +65,8 @@ async def _client(
         short_term=short_term,
         tools=tools,
         max_context_tokens=100_000,
-        micro_ratio=0.6,
-        full_ratio=0.8,
+        compact_ratio=0.7,
+        compress_ratio=0.5,
         max_compact_failures=max_compact_failures,
         group_timeline=timeline,
         memo_store=memo_store,
@@ -98,35 +98,57 @@ MOCK_RESULT_FULL = {
 
 
 # ---------------------------------------------------------------------------
-# Micro compact
+# Compact trigger — single ratio
 # ---------------------------------------------------------------------------
 
 
-async def test_micro_compact_private(prompt, short_term, tools) -> None:
-    async for client in _client(prompt, short_term, tools):
-        sid = "private_100"
-        _fill_messages(short_term, sid)
-        assert len(short_term.get(sid)) == 8
-        client._micro_compact_private(sid)
-        assert len(short_term.get(sid)) == 6  # dropped 2 (8 // 4)
-
-
-async def test_micro_compact_private_too_few(prompt, short_term, tools) -> None:
-    async for client in _client(prompt, short_term, tools):
-        sid = "private_100"
-        short_term.add(sid, "user", "hello")
-        client._micro_compact_private(sid)
-        assert len(short_term.get(sid)) == 1
-
-
-async def test_micro_compact_group(prompt, short_term, tools, timeline) -> None:
-    async for client in _client(prompt, short_term, tools, timeline=timeline):
+async def test_group_compact_triggers_at_ratio(prompt, short_term, tools, timeline, memo_store) -> None:
+    """compact_group fires when input_tokens > max_context_tokens * compact_ratio."""
+    async for client in _client(prompt, short_term, tools, timeline=timeline, memo_store=memo_store):
         gid = "12345"
-        for i in range(12):
+        for i in range(8):
             timeline.add(gid, role="user", content=f"msg {i}", speaker=f"user({i})")
-        assert len(timeline.get_messages(gid)) == 12
-        client._micro_compact_group(gid)
-        assert len(timeline.get_messages(gid)) == 9  # dropped 3 (12 // 4)
+
+        # Simulate previous call reported tokens above threshold (70k > 100k * 0.7)
+        timeline.set_input_tokens(gid, 70_001)
+
+        response = json.dumps({"summary": "compressed", "memos": {}, "group_memo": ""})
+        mock_compact = {"text": response, "tool_uses": [], "input_tokens": 50}
+        mock_chat = {
+            "text": "reply", "tool_uses": [], "input_tokens": 5000,
+            "output_tokens": 100, "cache_read": 0, "cache_create": 0,
+        }
+
+        with patch("src.llm.client._call_api", new_callable=AsyncMock, side_effect=[mock_compact, mock_chat]):
+            result = await client.chat(
+                session_id="group_12345", user_id="111",
+                user_content="hello", identity=_IDENTITY, group_id=gid,
+            )
+
+        assert result is not None
+        # After compact, 4 messages remain (8 * 0.5), plus 1 assistant reply added by chat()
+        assert len(timeline.get_messages(gid)) == 5  # 8 * 0.5 = 4 remaining + 1 assistant reply
+        assert timeline.get_summary(gid) == "compressed"
+
+
+async def test_group_no_compact_below_ratio(prompt, short_term, tools, timeline, memo_store) -> None:
+    """No compact when tokens below threshold."""
+    async for client in _client(prompt, short_term, tools, timeline=timeline, memo_store=memo_store):
+        gid = "12345"
+        for i in range(8):
+            timeline.add(gid, role="user", content=f"msg {i}", speaker=f"user({i})")
+        timeline.set_input_tokens(gid, 50_000)  # below 70k threshold
+
+        mock_chat = {
+            "text": "reply", "tool_uses": [], "input_tokens": 5000,
+            "output_tokens": 100, "cache_read": 0, "cache_create": 0,
+        }
+        with patch("src.llm.client._call_api", new_callable=AsyncMock, return_value=mock_chat):
+            await client.chat(
+                session_id="group_12345", user_id="111",
+                user_content="hello", identity=_IDENTITY, group_id=gid,
+            )
+        assert len(timeline.get_messages(gid)) == 9  # 8 original + 1 assistant reply added by chat()
 
 
 # ---------------------------------------------------------------------------

@@ -260,8 +260,8 @@ class LLMClient:
         short_term: ShortTermMemory,
         tools: ToolRegistry,
         max_context_tokens: int = 200_000,
-        micro_ratio: float = 0.6,
-        full_ratio: float = 0.8,
+        compact_ratio: float = 0.7,
+        compress_ratio: float = 0.5,
         max_compact_failures: int = 3,
         group_timeline: GroupTimeline | None = None,
         memo_store: MemoStore | None = None,
@@ -284,8 +284,8 @@ class LLMClient:
         self._short_term = short_term
         self._tools = tools
         self._max_context_tokens = max_context_tokens
-        self._micro_ratio = micro_ratio
-        self._full_ratio = full_ratio
+        self._compact_ratio = compact_ratio
+        self._compress_ratio = compress_ratio
         self._max_compact_failures = max_compact_failures
         self._private_compact_failures: int = 0
         self._group_compact_failures: int = 0
@@ -435,18 +435,14 @@ class LLMClient:
             assert group_id is not None
             assert self._timeline is not None
             # Group: messages already added to timeline by group_listener
-            if self._timeline.needs_compact(group_id, self._max_context_tokens, self._full_ratio):
+            if self._timeline.needs_compact(group_id, self._max_context_tokens, self._compact_ratio):
                 await self._compact_group(group_id, identity)
-            elif self._timeline.needs_compact(group_id, self._max_context_tokens, self._micro_ratio):
-                self._micro_compact_group(group_id)
             messages = self._build_group_messages(group_id)
         else:
             # Private: use ShortTermMemory
             self._short_term.add(session_id, "user", user_content)
-            if self._short_term.needs_compact(session_id, self._max_context_tokens, self._full_ratio):
+            if self._short_term.needs_compact(session_id, self._max_context_tokens, self._compact_ratio):
                 await self._compact(session_id)
-            elif self._short_term.needs_compact(session_id, self._max_context_tokens, self._micro_ratio):
-                self._micro_compact_private(session_id)
             messages = self._build_private_messages(session_id)
 
         if self._memo_store:
@@ -592,29 +588,6 @@ class LLMClient:
         return last_seg
 
     # ------------------------------------------------------------------
-    # Micro compact — drop oldest messages without LLM call
-    # ------------------------------------------------------------------
-
-    def _micro_compact_group(self, group_id: str) -> None:
-        """Drop oldest 25% of messages. No LLM call, no summary change, no cache break."""
-        assert self._timeline is not None
-        messages = self._timeline.get_messages(group_id)
-        if len(messages) < 4:
-            return
-        drop = len(messages) // 4
-        self._timeline.drop_oldest(group_id, drop)
-        logger.info("micro_compact_group | group={} dropped={}", group_id, drop)
-
-    def _micro_compact_private(self, session_id: str) -> None:
-        """Drop oldest 25% of messages from short-term memory."""
-        history = self._short_term.get(session_id)
-        if len(history) < 4:
-            return
-        drop = len(history) // 4
-        self._short_term.drop_oldest(session_id, drop)
-        logger.info("micro_compact_private | session={} dropped={}", session_id, drop)
-
-    # ------------------------------------------------------------------
     # Compact — private chat
     # ------------------------------------------------------------------
 
@@ -630,7 +603,7 @@ class LLMClient:
                 return
 
             old_summary = self._short_term.get_summary(session_id)
-            split = len(history) // 2
+            split = max(2, int(len(history) * self._compress_ratio))
 
             # Assemble content for compression
             lines: list[str] = []
@@ -733,7 +706,7 @@ class LLMClient:
                 return
 
             old_summary = self._timeline.get_summary(group_id)
-            split = len(messages) // 2
+            split = max(2, int(len(messages) * self._compress_ratio))
 
             # Assemble content for compression
             lines: list[str] = []
