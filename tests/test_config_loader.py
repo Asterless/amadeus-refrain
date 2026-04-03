@@ -35,11 +35,10 @@ def test_load_defaults_without_file(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert cfg.llm.model == "claude-sonnet-4-6"
     assert cfg.llm.max_tokens == 1024
     assert cfg.llm.context.max_context_tokens == 1_000_000
-    assert cfg.compact.micro_ratio == 0.6
-    assert cfg.compact.full_ratio == 0.8
+    assert cfg.compact.ratio == 0.7
+    assert cfg.compact.compress_ratio == 0.5
     assert cfg.log.dir == "storage/logs"
     assert cfg.soul.dir == "soul"
-    assert cfg.group.max_timeline_messages == 200
     assert cfg.group.history_load_count == 30
     assert cfg.group.debounce_seconds == 5.0
     assert cfg.group.batch_size == 10
@@ -73,14 +72,13 @@ max_tokens = 2048
 max_context_tokens = 100_000
 
 [compact]
-micro_ratio = 0.5
-full_ratio = 0.7
+ratio = 0.5
+compress_ratio = 0.3
 
 [soul]
 dir = "custom_soul"
 
 [group]
-max_timeline_messages = 100
 history_load_count = 50
 debounce_seconds = 3.0
 batch_size = 5
@@ -97,10 +95,9 @@ api_url = "http://napcat:29300"
     assert cfg.llm.model == "claude-opus-4"
     assert cfg.llm.max_tokens == 2048
     assert cfg.llm.context.max_context_tokens == 100_000
-    assert cfg.compact.micro_ratio == 0.5
-    assert cfg.compact.full_ratio == 0.7
+    assert cfg.compact.ratio == 0.5
+    assert cfg.compact.compress_ratio == 0.3
     assert cfg.soul.dir == "custom_soul"
-    assert cfg.group.max_timeline_messages == 100
     assert cfg.group.history_load_count == 50
     assert cfg.group.debounce_seconds == 3.0
     assert cfg.group.batch_size == 5
@@ -245,14 +242,32 @@ def test_memo_config_defaults() -> None:
     assert m.history_enabled is True
 
     c = CompactConfig()
-    assert c.micro_ratio == 0.6
-    assert c.full_ratio == 0.8
+    assert c.ratio == 0.7
+    assert c.compress_ratio == 0.5
     assert c.max_failures == 3
+    assert c.cache_hit_warn == 90.0
 
     d = DreamConfig()
     assert d.enabled is False
     assert d.interval_hours == 24
     assert d.min_compacts == 5
     assert d.max_rounds == 15
+
+
+def test_compact_config_defaults():
+    from src.config import CompactConfig
+    c = CompactConfig()
+    assert c.ratio == 0.7
+    assert c.compress_ratio == 0.5
+    assert c.max_failures == 3
+    assert c.cache_hit_warn == 90.0
+
+
+def test_compact_config_rejects_invalid_ratio():
+    from src.config import CompactConfig
+    with pytest.raises(ValueError):
+        CompactConfig(ratio=1.5)
+    with pytest.raises(ValueError):
+        CompactConfig(compress_ratio=0.0)
 
 

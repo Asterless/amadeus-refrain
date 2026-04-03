@@ -44,7 +44,6 @@ class SoulConfig(BaseModel):
 class GroupConfig(BaseModel):
     """群聊上下文配置。"""
 
-    max_timeline_messages: int = 200
     history_load_count: int = 30
     allowed_groups: list[int] = []
     debounce_seconds: float = 5.0
@@ -70,15 +69,17 @@ class MemoConfig(BaseModel):
 class CompactConfig(BaseModel):
     """上下文压缩配置。"""
 
-    micro_ratio: float = 0.6
-    full_ratio: float = 0.8
+    ratio: float = 0.7
+    compress_ratio: float = 0.5
     max_failures: int = 3
     cache_hit_warn: float = 90.0
 
     @model_validator(mode="after")
     def _check_ratios(self) -> Self:
-        if self.micro_ratio >= self.full_ratio:
-            raise ValueError("micro_ratio must be less than full_ratio")
+        if not (0.0 < self.ratio < 1.0):
+            raise ValueError("ratio must be between 0 and 1")
+        if not (0.0 < self.compress_ratio < 1.0):
+            raise ValueError("compress_ratio must be between 0 and 1")
         return self
 
 

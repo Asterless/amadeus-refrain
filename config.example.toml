@@ -80,10 +80,10 @@ dir = "soul"
 # 上下文压缩
 # ---------------------------------------------------------------------------
 [compact]
-# micro compact 触发比例（占 max_context_tokens）
-micro_ratio = 0.6
-# full compact 触发比例（占 max_context_tokens）
-full_ratio = 0.8
+# compact 触发比例（input_tokens 占 max_context_tokens 的比例）
+ratio = 0.7
+# 每次压缩前多少比例的消息（0.5 = 前 50%）
+compress_ratio = 0.5
 # 连续压缩失败上限，超过后跳过
 max_failures = 3
 # cache_hit 低于此百分比时告警
@@ -106,9 +106,6 @@ max_rounds = 15
 # 群聊
 # ---------------------------------------------------------------------------
 [group]
-# 内存中保留的最大群消息条数
-max_timeline_messages = 200
-
 # 启动时从 NapCat 拉取的历史消息条数
 history_load_count = 30
 
