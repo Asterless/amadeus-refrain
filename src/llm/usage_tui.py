@@ -376,11 +376,14 @@ def render_line_chart(
     line_style: str = "magenta",
     warn_below: float | None = None,
     y_axis_width: int = 0,
+    y_floor: float | None = None,
+    y_ceil: float | None = None,
 ) -> Text:
     """Render a line chart with adaptive Y range.
 
     Y range does NOT start from 0; uses _nice_range_ticks for scaling.
     None values leave gaps in the line.
+    *y_floor* / *y_ceil* clamp the Y axis so ticks never go below / above.
     """
     if chart_width <= 0:
         chart_width = shutil.get_terminal_size(fallback=(80, 24)).columns
@@ -401,6 +404,17 @@ def render_line_chart(
     span = v_max - v_min
     padding = max(abs(v_min) * 0.1, 1.0) if span < 1e-12 else span * 0.1
     ticks = _nice_range_ticks(v_min - padding, v_max + padding)
+
+    # Clamp ticks to floor/ceil bounds
+    if y_floor is not None:
+        ticks = [t for t in ticks if t >= y_floor - 1e-9]
+        if not ticks or ticks[0] > y_floor + 1e-9:
+            ticks.insert(0, y_floor)
+    if y_ceil is not None:
+        ticks = [t for t in ticks if t <= y_ceil + 1e-9]
+        if not ticks or ticks[-1] < y_ceil - 1e-9:
+            ticks.append(y_ceil)
+
     y_lo = ticks[0]
     y_hi = ticks[-1]
     y_range = y_hi - y_lo
@@ -653,7 +667,11 @@ def _y_width_for_bar(values: list[float]) -> int:
     return max(len(_fmt_axis_label(t)) for t in ticks) + 1
 
 
-def _y_width_for_line(values: list[float | None]) -> int:
+def _y_width_for_line(
+    values: list[float | None],
+    y_floor: float | None = None,
+    y_ceil: float | None = None,
+) -> int:
     """Compute Y-axis label width for a line chart's data."""
     real = [v for v in values if v is not None]
     if not real:
@@ -662,6 +680,12 @@ def _y_width_for_line(values: list[float | None]) -> int:
     span = v_max - v_min
     pad = max(abs(v_min) * 0.1, 1.0) if span < 1e-12 else span * 0.1
     ticks = _nice_range_ticks(v_min - pad, v_max + pad)
+    if y_floor is not None:
+        ticks = [t for t in ticks if t >= y_floor - 1e-9]
+    if y_ceil is not None:
+        ticks = [t for t in ticks if t <= y_ceil + 1e-9]
+    if not ticks:
+        ticks = [0.0]
     return max(len(_fmt_axis_label(t)) for t in ticks) + 1
 
 
@@ -766,7 +790,7 @@ def render_dashboard(
     y_width = max(
         _y_width_for_bar(calls),
         _y_width_for_bar(stacked_totals),
-        _y_width_for_line(cache_hit_pcts),
+        _y_width_for_line(cache_hit_pcts, y_floor=0, y_ceil=100),
     )
 
     # Chart 1: calls bar chart
@@ -797,7 +821,7 @@ def render_dashboard(
     result.append_text(tokens_chart)
     result.append("\n")
 
-    # Chart 3: cache hit % line chart
+    # Chart 3: cache hit % line chart (Y axis clamped to 0-100)
     cache_chart = render_line_chart(
         buckets=all_buckets,
         values=cache_hit_pcts,
@@ -806,6 +830,8 @@ def render_dashboard(
         chart_width=chart_width,
         line_style="magenta",
         y_axis_width=y_width,
+        y_floor=0,
+        y_ceil=100,
     )
     result.append_text(cache_chart)
 
