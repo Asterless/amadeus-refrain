@@ -167,7 +167,7 @@ class DreamAgent:
                     "审查 send_count 低且 created_at 久远的表情包（LRU 候选），"
                     "综合判断是否淘汰（独特/有价值的可以保留），"
                     f"用 delete_sticker 删除不需要的。库存上限 {self._sticker_store.max_count} 张。"
-                    "同时检查 description 和 usage_hint 是否准确。"
+                    "如果发现 description 或 usage_hint 明显不准确，可以删除该表情包。"
                 )
             template_section = (
                 f"\n用户备忘录模板：\n{USER_MEMO_TEMPLATE}\n\n"

@@ -114,7 +114,7 @@ class StickerStore:
         entry = self._index.get(sticker_id)
         if entry is None:
             return None
-        return self._storage_dir / entry["filename"]
+        return self._storage_dir / entry["file"]
 
     def lookup_by_hash(self, image_data: bytes) -> str | None:
         """Return sticker_id if image_data matches an existing sticker, else None."""
@@ -156,7 +156,7 @@ class StickerStore:
 
         now_iso = datetime.now(UTC).isoformat()
         self._index[sticker_id] = {
-            "filename": filename,
+            "file": filename,
             "description": description,
             "usage_hint": usage_hint,
             "source": source,
@@ -176,7 +176,7 @@ class StickerStore:
         if entry is None:
             return False
 
-        file_path = self._storage_dir / entry["filename"]
+        file_path = self._storage_dir / entry["file"]
         if file_path.exists():
             file_path.unlink()
 

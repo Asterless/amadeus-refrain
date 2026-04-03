@@ -122,7 +122,7 @@ def test_add_jpeg(store: StickerStore) -> None:
     assert entry["send_count"] == 0
     assert entry["last_sent"] is None
     assert "created_at" in entry
-    assert entry["filename"].endswith(".jpg")
+    assert entry["file"].endswith(".jpg")
 
 
 def test_add_png(store: StickerStore) -> None:
@@ -131,7 +131,7 @@ def test_add_png(store: StickerStore) -> None:
     assert is_new is True
     entry = store.get(sid)
     assert entry is not None
-    assert entry["filename"].endswith(".png")
+    assert entry["file"].endswith(".png")
     assert entry["source"] == "admin"
 
 
@@ -141,7 +141,7 @@ def test_add_webp(store: StickerStore) -> None:
     assert is_new is True
     entry = store.get(sid)
     assert entry is not None
-    assert entry["filename"].endswith(".webp")
+    assert entry["file"].endswith(".webp")
 
 
 def test_add_writes_file(store: StickerStore) -> None:
