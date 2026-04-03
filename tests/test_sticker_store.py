@@ -155,7 +155,9 @@ def test_add_writes_file(store: StickerStore) -> None:
 def test_add_source_admin(store: StickerStore) -> None:
     sid, is_new = store.add(_JPEG_DATA, "管理员添加", "正式使用", source="admin")
     assert is_new is True
-    assert store.get(sid)["source"] == "admin"
+    entry = store.get(sid)
+    assert entry is not None
+    assert entry["source"] == "admin"
 
 
 # ------------------------------------------------------------------
@@ -170,7 +172,9 @@ def test_add_dedup_same_image(store: StickerStore) -> None:
     assert is_new1 is True
     assert is_new2 is False
     # Metadata should still be from the first add
-    assert store.get(sid1)["description"] == "first"
+    entry = store.get(sid1)
+    assert entry is not None
+    assert entry["description"] == "first"
 
 
 def test_add_two_different_images_are_distinct(store: StickerStore) -> None:
@@ -236,21 +240,31 @@ def test_remove_updates_list(store: StickerStore) -> None:
 
 def test_record_send_increments_count(store: StickerStore) -> None:
     sid, _ = store.add(_JPEG_DATA, "desc", "hint")
-    assert store.get(sid)["send_count"] == 0
+    entry = store.get(sid)
+    assert entry is not None
+    assert entry["send_count"] == 0
 
     store.record_send(sid)
-    assert store.get(sid)["send_count"] == 1
+    entry = store.get(sid)
+    assert entry is not None
+    assert entry["send_count"] == 1
 
     store.record_send(sid)
-    assert store.get(sid)["send_count"] == 2
+    entry = store.get(sid)
+    assert entry is not None
+    assert entry["send_count"] == 2
 
 
 def test_record_send_updates_last_sent(store: StickerStore) -> None:
     sid, _ = store.add(_JPEG_DATA, "desc", "hint")
-    assert store.get(sid)["last_sent"] is None
+    entry = store.get(sid)
+    assert entry is not None
+    assert entry["last_sent"] is None
 
     store.record_send(sid)
-    last_sent = store.get(sid)["last_sent"]
+    entry = store.get(sid)
+    assert entry is not None
+    last_sent = entry["last_sent"]
     assert last_sent is not None
     # Should be a valid ISO datetime string
     from datetime import datetime
