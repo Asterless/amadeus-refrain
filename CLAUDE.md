@@ -17,6 +17,7 @@ uv run pyright                 # Type check
 | Restart bot (soul/config) | `docker compose restart bot` |
 | Rebuild bot (code/deps) | `docker compose up bot -d --build` |
 | Usage TUI | `uv run python -m src.llm.usage_cli tui day\|week\|month [date]` |
+| Build & deploy | `./scripts/deploy.sh` |
 
 ## Architecture
 
