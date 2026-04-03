@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -51,6 +52,11 @@ class UsageTracker:
         self._cache_hit_warn: float = 90.0
         self._slow_threshold_s: float = 60.0
         self._cold_start: bool = True
+        # Cache alert: time-window average + cooldown
+        self._cache_alert_window_s: float = 30.0 * 60  # 30 min default
+        self._cache_alert_cooldown_s: float = 10.0 * 60  # 10 min default
+        self._cache_samples: list[tuple[float, float]] = []  # (monotonic_ts, hit_rate)
+        self._last_cache_alert_ts: float = 0.0
 
     async def init(self) -> None:
         self._db = await aiosqlite.connect(self._db_path)
@@ -71,10 +77,14 @@ class UsageTracker:
         alert_fn: Callable[[str], Awaitable[None]],
         cache_hit_warn: float = 90.0,
         slow_threshold_s: float = 60.0,
+        cache_alert_window_m: float = 30.0,
+        cache_alert_cooldown_m: float = 10.0,
     ) -> None:
         self._alert_fn = alert_fn
         self._cache_hit_warn = cache_hit_warn
         self._slow_threshold_s = slow_threshold_s
+        self._cache_alert_window_s = cache_alert_window_m * 60
+        self._cache_alert_cooldown_s = cache_alert_cooldown_m * 60
 
     async def _check_alerts(
         self,
@@ -109,11 +119,38 @@ class UsageTracker:
                 return
             total = input_tokens + cache_read_tokens + cache_create_tokens
             if total > 0:
+                now = time.monotonic()
                 hit_rate = cache_read_tokens / total * 100
-                if hit_rate < self._cache_hit_warn:
-                    msg = f"⚠ Cache hit rate low: {hit_rate:.0f}% (threshold: {self._cache_hit_warn:.0f}%)"
-                    logger.warning("usage_alert | {}", msg)
-                    await self._alert_fn(msg)
+                # Collect sample and prune stale entries outside the window
+                self._cache_samples.append((now, hit_rate))
+                cutoff = now - self._cache_alert_window_s
+                self._cache_samples = [
+                    s for s in self._cache_samples if s[0] >= cutoff
+                ]
+                # Need at least 3 samples to judge
+                if len(self._cache_samples) < 3:
+                    return
+                avg_hit = sum(r for _, r in self._cache_samples) / len(self._cache_samples)
+                if avg_hit >= self._cache_hit_warn:
+                    return
+                # Cooldown: suppress repeated alerts
+                if now - self._last_cache_alert_ts < self._cache_alert_cooldown_s:
+                    logger.warning(
+                        "usage_alert | cache avg {:.0f}% (suppressed, cooldown)",
+                        avg_hit,
+                    )
+                    return
+                self._last_cache_alert_ts = now
+                window_min = (now - self._cache_samples[0][0]) / 60
+                detail = " | ".join(f"{r:.0f}%" for _, r in self._cache_samples)
+                msg = (
+                    f"⚠ Cache hit rate low: avg {avg_hit:.0f}% "
+                    f"over {len(self._cache_samples)} calls / {window_min:.0f}min "
+                    f"(threshold: {self._cache_hit_warn:.0f}%)\n"
+                    f"detail: {detail}"
+                )
+                logger.warning("usage_alert | {}", msg)
+                await self._alert_fn(msg)
 
     async def record(
         self,

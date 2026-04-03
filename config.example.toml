@@ -86,8 +86,12 @@ ratio = 0.7
 compress_ratio = 0.5
 # 连续压缩失败上限，超过后跳过
 max_failures = 3
-# cache_hit 低于此百分比时告警
+# cache_hit 低于此百分比时告警（窗口内平均值）
 cache_hit_warn = 90.0
+# 计算平均 cache hit rate 的时间窗口（分钟）
+cache_alert_window_m = 30.0
+# 两次 cache 告警间最短间隔（分钟）
+cache_alert_cooldown_m = 10.0
 
 # ---------------------------------------------------------------------------
 # Dream 整理（离线摘要）

@@ -144,6 +144,7 @@ async def test_alert_on_slow_call(tracker: UsageTracker) -> None:
 
 async def test_alert_on_low_cache_hit(tracker: UsageTracker) -> None:
     alert_fn = AsyncMock()
+    # min_samples=3, so we need 3 low-hit calls after cold start to trigger
     tracker.set_alert(alert_fn=alert_fn, cache_hit_warn=90.0, slow_threshold_s=999.0)
     # Consume cold-start (first chat call after restart is silently skipped)
     await tracker.record(
@@ -152,13 +153,21 @@ async def test_alert_on_low_cache_hit(tracker: UsageTracker) -> None:
         output_tokens=10, tool_rounds=0, elapsed_s=1.0,
     )
     alert_fn.reset_mock()
-    await tracker.record(
+    low_hit_kwargs = dict(
         call_type="chat", user_id="1", group_id=None, model="m",
         input_tokens=100, cache_read_tokens=10, cache_create_tokens=0,
         output_tokens=50, tool_rounds=0, elapsed_s=1.0,
     )
+    # First two low-hit calls: not enough samples yet (need 3)
+    await tracker.record(**low_hit_kwargs)
+    await tracker.record(**low_hit_kwargs)
+    alert_fn.assert_not_called()
+    # Third low-hit call triggers the alert
+    await tracker.record(**low_hit_kwargs)
     alert_fn.assert_called_once()
-    assert "cache" in alert_fn.call_args[0][0].lower()
+    msg = alert_fn.call_args[0][0].lower()
+    assert "cache" in msg
+    assert "avg" in msg
 
 
 async def test_no_cache_alert_on_cold_start(tracker: UsageTracker) -> None:
@@ -189,12 +198,48 @@ async def test_alert_on_error(tracker: UsageTracker) -> None:
 async def test_no_alert_when_ok(tracker: UsageTracker) -> None:
     alert_fn = AsyncMock()
     tracker.set_alert(alert_fn=alert_fn, cache_hit_warn=90.0, slow_threshold_s=60.0)
+    # Cold start
     await tracker.record(
         call_type="chat", user_id="1", group_id=None, model="m",
         input_tokens=10, cache_read_tokens=90, cache_create_tokens=0,
         output_tokens=50, tool_rounds=0, elapsed_s=1.0,
     )
+    # 3 high-hit calls — should never alert
+    for _ in range(3):
+        await tracker.record(
+            call_type="chat", user_id="1", group_id=None, model="m",
+            input_tokens=10, cache_read_tokens=90, cache_create_tokens=0,
+            output_tokens=50, tool_rounds=0, elapsed_s=1.0,
+        )
     alert_fn.assert_not_called()
+
+
+async def test_cache_alert_cooldown(tracker: UsageTracker) -> None:
+    """Second alert within cooldown period is suppressed."""
+    alert_fn = AsyncMock()
+    tracker.set_alert(
+        alert_fn=alert_fn, cache_hit_warn=90.0, slow_threshold_s=999.0,
+        cache_alert_cooldown_m=60.0,  # 60 min cooldown — won't expire during test
+    )
+    # Cold start
+    await tracker.record(
+        call_type="chat", user_id="1", group_id=None, model="m",
+        input_tokens=100, cache_read_tokens=0, cache_create_tokens=100,
+        output_tokens=10, tool_rounds=0, elapsed_s=1.0,
+    )
+    low_hit = dict(
+        call_type="chat", user_id="1", group_id=None, model="m",
+        input_tokens=100, cache_read_tokens=10, cache_create_tokens=0,
+        output_tokens=50, tool_rounds=0, elapsed_s=1.0,
+    )
+    # Fill window (3 calls) → first alert
+    for _ in range(3):
+        await tracker.record(**low_hit)
+    assert alert_fn.call_count == 1
+    # More low-hit calls within cooldown → suppressed
+    for _ in range(3):
+        await tracker.record(**low_hit)
+    assert alert_fn.call_count == 1  # still just 1
 
 
 async def test_no_cache_alert_for_compact(tracker: UsageTracker) -> None:

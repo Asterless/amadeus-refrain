@@ -182,6 +182,8 @@ async def _on_connect(bot: Bot) -> None:
             alert_fn=_alert_admins,
             cache_hit_warn=bot_config.compact.cache_hit_warn,
             slow_threshold_s=bot_config.llm.usage.slow_threshold_s,
+            cache_alert_window_m=bot_config.compact.cache_alert_window_m,
+            cache_alert_cooldown_m=bot_config.compact.cache_alert_cooldown_m,
         )
 
     try:

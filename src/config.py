@@ -73,6 +73,8 @@ class CompactConfig(BaseModel):
     compress_ratio: float = 0.5
     max_failures: int = 3
     cache_hit_warn: float = 90.0
+    cache_alert_window_m: float = 30.0
+    cache_alert_cooldown_m: float = 10.0
 
     @model_validator(mode="after")
     def _check_ratios(self) -> Self:
