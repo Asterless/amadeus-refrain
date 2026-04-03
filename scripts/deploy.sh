@@ -9,15 +9,19 @@ else
     VERSION="v$(date +%Y%m%d)-${SHORT_HASH}"
 fi
 
-IMAGE="qq-bot:${VERSION}"
+COMMIT=$(git rev-parse --short HEAD)
 
-echo "==> Building ${IMAGE}"
-docker compose build --build-arg GIT_COMMIT="$(git rev-parse --short HEAD)" bot
+echo "==> Building bot (commit: ${COMMIT})"
+GIT_COMMIT="${COMMIT}" docker compose build bot
 
-echo "==> Tagging ${IMAGE}"
-docker tag qq-bot "${IMAGE}"
+# Get the image name that compose actually built
+BUILT_IMAGE=$(docker compose images bot --format json | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['Repository'])")
 
-echo "==> Deploying ${IMAGE}"
-GIT_COMMIT="$(git rev-parse --short HEAD)" docker compose up bot -d --build
+echo "==> Tagging ${BUILT_IMAGE} → qq-bot:${VERSION}, qq-bot:latest"
+docker tag "${BUILT_IMAGE}" "qq-bot:${VERSION}"
+docker tag "${BUILT_IMAGE}" "qq-bot:latest"
 
-echo "==> Done: ${IMAGE}"
+echo "==> Deploying"
+GIT_COMMIT="${COMMIT}" docker compose up bot -d
+
+echo "==> Done: qq-bot:${VERSION}"
