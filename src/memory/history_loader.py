@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from pathlib import Path
 from typing import Any
 
 import aiohttp
@@ -13,6 +14,7 @@ from src.constants.qq_face import face_to_text
 from src.memory.group_timeline import GroupTimeline
 from src.memory.image_cache import ImageCache
 from src.memory.types import Content, ContentBlock, ImageRefBlock, TextBlock
+from src.sticker.store import StickerStore
 
 
 async def load_group_history(
@@ -22,12 +24,15 @@ async def load_group_history(
     count: int = 30,
     bot_self_id: str = "",
     image_cache: ImageCache | None = None,
+    sticker_store: StickerStore | None = None,
 ) -> None:
     """从 NapCat 拉取多个群的历史消息。"""
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
         for gid in group_ids:
             try:
-                await _load_one_group(session, napcat_url, gid, timeline, count, bot_self_id, image_cache)
+                await _load_one_group(
+                    session, napcat_url, gid, timeline, count, bot_self_id, image_cache, sticker_store
+                )
             except Exception:
                 logger.warning("load_history failed | group={}", gid, exc_info=True)
 
@@ -40,6 +45,7 @@ async def _load_one_group(
     count: int,
     bot_self_id: str = "",
     image_cache: ImageCache | None = None,
+    sticker_store: StickerStore | None = None,
 ) -> None:
     async with session.post(
         f"{napcat_url}/get_group_msg_history",
@@ -63,7 +69,7 @@ async def _load_one_group(
         user_id = str(sender.get("user_id", ""))
         nickname = sender.get("nickname", "") or sender.get("card", "") or user_id
 
-        content = await _extract_content(msg.get("message", []), session, image_cache)
+        content = await _extract_content(msg.get("message", []), session, image_cache, sticker_store)
         if not content:
             continue
 
@@ -85,6 +91,7 @@ async def _extract_content(
     segments: list[dict[str, Any]],
     session: aiohttp.ClientSession,
     image_cache: ImageCache | None,
+    sticker_store: StickerStore | None = None,
 ) -> Content:
     """Extract text, face, and image segments into a Content value."""
     text_parts: list[str] = []
@@ -125,6 +132,28 @@ async def _extract_content(
             if isinstance(r, BaseException) or r is None:
                 text_parts.append("[图片]")
             else:
+                # Check if the downloaded image matches a known sticker
+                if sticker_store is not None and image_cache is not None:
+                    cached_path = Path(r["path"])
+                    if cached_path.exists():
+                        image_data = cached_path.read_bytes()
+                        stk_id = sticker_store.lookup_by_hash(image_data)
+                        if stk_id is not None:
+                            sticker_path = sticker_store.resolve_path(stk_id)
+                            if sticker_path is not None:
+                                # Remove the duplicate from image_cache and use sticker path
+                                cached_path.unlink(missing_ok=True)
+                                images.append(
+                                    ImageRefBlock(
+                                        type="image_ref",
+                                        path=str(sticker_path),
+                                        media_type=r["media_type"],
+                                    )
+                                )
+                                logger.debug(
+                                    "history image matched sticker | sticker_id={}", stk_id
+                                )
+                                continue
                 images.append(r)
         elapsed_ms = (time.perf_counter() - t0) * 1000
         logger.debug(

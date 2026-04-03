@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import json
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -10,6 +11,7 @@ from typing import Any
 from loguru import logger
 
 from src.memory.memo_store import GROUP_MEMO_TEMPLATE, PENDING_HEADER, USER_MEMO_TEMPLATE, MemoStore
+from src.sticker.store import StickerStore
 
 # Type alias for the LLM API caller (matches LLMClient._call signature)
 ApiCaller = Callable[..., Awaitable[dict[str, Any]]]
@@ -65,6 +67,30 @@ _UPDATE_MEMO_TOOL: dict[str, Any] = {
     },
 }
 
+_LIST_STICKERS_TOOL: dict[str, Any] = {
+    "name": "list_stickers",
+    "description": "查看当前表情包库的完整索引（含使用统计）。",
+    "input_schema": {
+        "type": "object",
+        "properties": {},
+    },
+}
+
+_DELETE_STICKER_TOOL: dict[str, Any] = {
+    "name": "delete_sticker",
+    "description": "删除一张表情包（文件和索引同时清除）。",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "id": {
+                "type": "string",
+                "description": "表情包 ID，如 stk_a1b2c3d4",
+            },
+        },
+        "required": ["id"],
+    },
+}
+
 
 def dream_pre_check(
     store: MemoStore,
@@ -104,12 +130,14 @@ class DreamAgent:
         max_rounds: int = 15,
         user_max_chars: int = 300,
         group_max_chars: int = 500,
+        sticker_store: StickerStore | None = None,
     ) -> None:
         self._store = store
         self._interval_hours = interval_hours
         self._max_rounds = max_rounds
         self._user_max_chars = user_max_chars
         self._group_max_chars = group_max_chars
+        self._sticker_store = sticker_store
         self._running: bool = False
         self._loop_task: asyncio.Task[None] | None = None
 
@@ -153,6 +181,15 @@ class DreamAgent:
             index_text = self._store.serialize_index()
             issues_text = "\n".join(f"- {i}" for i in issues) if issues else "无明显问题"
 
+            sticker_section = ""
+            if self._sticker_store:
+                sticker_section = (
+                    "\n\n4. 表情包库整理：用 list_stickers 查看完整索引，"
+                    "审查 send_count 低且 created_at 久远的表情包（LRU 候选），"
+                    "综合判断是否淘汰（独特/有价值的可以保留），"
+                    f"用 delete_sticker 删除不需要的。库存上限 {self._sticker_store.max_count} 张。"
+                    "如果发现 description 或 usage_hint 明显不准确，可以删除该表情包。"
+                )
             template_section = (
                 f"\n用户备忘录模板：\n{USER_MEMO_TEMPLATE}\n\n"
                 f"群备忘录模板：\n{GROUP_MEMO_TEMPLATE}\n"
@@ -168,12 +205,15 @@ class DreamAgent:
                 "2. 跨文件交叉验证：读取相关联的备忘录（如某用户提到的群、群里提到的用户），"
                 "检查信息是否一致，修正矛盾或过时内容。\n"
                 "3. 其他问题（悬空引用、超长等）：自主修复。\n"
+                f"{sticker_section}"
                 f"{template_section}"
                 f"字数限制：用户 {self._user_max_chars} 字，群 {self._group_max_chars} 字。\n\n"
                 f"限制：最多 {self._max_rounds} 轮工具调用。如果没有问题需要处理，直接回复即可。"
             )}]
 
             tools = [_RECALL_MEMO_TOOL, _UPDATE_MEMO_TOOL]
+            if self._sticker_store:
+                tools.extend([_LIST_STICKERS_TOOL, _DELETE_STICKER_TOOL])
             messages: list[dict[str, Any]] = [
                 {"role": "user", "content": "请开始整理备忘录。"},
             ]
@@ -254,5 +294,20 @@ class DreamAgent:
                 return "已更新"
             except (ValueError, OSError) as e:
                 return f"写入失败: {e}"
+
+        if name == "list_stickers":
+            if self._sticker_store is None:
+                return "表情包系统未启用"
+            return json.dumps(self._sticker_store.list_all(), ensure_ascii=False, indent=2)
+
+        if name == "delete_sticker":
+            if self._sticker_store is None:
+                return "表情包系统未启用"
+            sticker_id = inp.get("id", "")
+            if not sticker_id:
+                return "缺少 id 参数"
+            if self._sticker_store.remove(sticker_id):
+                return f"已删除: {sticker_id}"
+            return f"未找到: {sticker_id}"
 
         return f"未知工具: {name}"

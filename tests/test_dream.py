@@ -1,8 +1,14 @@
 
+import json
+
 import pytest
 
 from src.llm.dream import DreamAgent, dream_pre_check
 from src.memory.memo_store import MemoStore
+from src.sticker.store import StickerStore
+
+# Minimal JPEG bytes for sticker test data
+_JPEG_DATA = b"\xff\xd8\xff\xe0" + b"\x00" * 64 + b"dream-sticker-test"
 
 
 @pytest.fixture
@@ -244,3 +250,43 @@ async def test_dream_execute_tool_errors(store: MemoStore) -> None:
     assert "缺少 id" in await agent._execute_tool("update_memo", {})
     assert "未找到" in await agent._execute_tool("recall_memo", {"id": "user_nonexistent"})
     assert "未知工具" in await agent._execute_tool("bad_tool", {})
+
+
+@pytest.fixture
+def sticker_store(tmp_path) -> StickerStore:
+    return StickerStore(storage_dir=str(tmp_path / "stickers"))
+
+
+async def test_dream_list_stickers(store: MemoStore, sticker_store: StickerStore) -> None:
+    """list_stickers tool returns sticker data as JSON."""
+    stk_id, _ = sticker_store.add(_JPEG_DATA, "测试表情", "开心时用", source="auto")
+    agent = DreamAgent(store=store, sticker_store=sticker_store)
+
+    result = await agent._execute_tool("list_stickers", {})
+
+    parsed = json.loads(result)
+    assert stk_id in parsed
+    entry = parsed[stk_id]
+    assert entry["description"] == "测试表情"
+    assert entry["usage_hint"] == "开心时用"
+
+
+async def test_dream_delete_sticker(store: MemoStore, sticker_store: StickerStore) -> None:
+    """delete_sticker tool removes the sticker and confirms deletion."""
+    stk_id, _ = sticker_store.add(_JPEG_DATA, "要删除的表情", "临时用", source="auto")
+    assert sticker_store.get(stk_id) is not None
+
+    agent = DreamAgent(store=store, sticker_store=sticker_store)
+    result = await agent._execute_tool("delete_sticker", {"id": stk_id})
+
+    assert "已删除" in result
+    assert stk_id in result
+    assert sticker_store.get(stk_id) is None
+
+
+async def test_dream_delete_sticker_not_found(store: MemoStore, sticker_store: StickerStore) -> None:
+    """delete_sticker returns 未找到 for nonexistent sticker."""
+    agent = DreamAgent(store=store, sticker_store=sticker_store)
+    result = await agent._execute_tool("delete_sticker", {"id": "stk_nonexistent"})
+
+    assert "未找到" in result

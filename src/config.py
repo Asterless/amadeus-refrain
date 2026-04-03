@@ -103,6 +103,14 @@ class VisionConfig(BaseModel):
     cache_max_age_hours: int = 24
 
 
+class StickerConfig(BaseModel):
+    """表情包系统配置。"""
+
+    enabled: bool = True
+    storage_dir: str = "storage/stickers"
+    max_count: int = 200
+
+
 class BotConfig(BaseModel):
     """全局 Bot 配置。"""
 
@@ -115,5 +123,6 @@ class BotConfig(BaseModel):
     group: GroupConfig = GroupConfig()
     napcat: NapcatConfig = NapcatConfig()
     vision: VisionConfig = VisionConfig()
+    sticker: StickerConfig = StickerConfig()
     admins: dict[str, str] = {}
     allowed_private_users: list[int] = []
