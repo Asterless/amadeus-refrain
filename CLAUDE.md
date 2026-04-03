@@ -53,7 +53,7 @@ Fix any errors discovered during testing, even if they were pre-existing and not
 
 ## Release
 
-发布新版本时，Docker 镜像版本必须和 git tag 对齐。
+发布新版本时，Docker 镜像版本必须和 git tag 对齐。无正式 tag 时使用 `vYYYYMMDD-<short hash>` 格式（如 `v20260404-cd328d2`）。
 
 ## Language
 
