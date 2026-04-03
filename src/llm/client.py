@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 import time
@@ -145,6 +146,26 @@ async def _resolve_image_refs(
         logger.debug("resolve_image_refs | images={} elapsed={:.0f}ms", resolved_count, elapsed_ms)
 
     return messages
+
+
+def _hash_json(obj: Any) -> str:
+    """Return first 8 hex chars of SHA-256 of JSON-serialized obj."""
+    raw = json.dumps(obj, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(raw.encode()).hexdigest()[:8]
+
+
+def _log_cache_debug(
+    session_id: str,
+    system_blocks: list[dict[str, Any]],
+    tool_defs: list[dict[str, Any]],
+    msg_count: int,
+) -> None:
+    tools_hash = _hash_json(tool_defs)
+    block_hashes = [_hash_json(b) for b in system_blocks]
+    logger.debug(
+        "cache_debug | session={} tools={} system=[{}] msgs={}",
+        session_id, tools_hash, ", ".join(block_hashes), msg_count,
+    )
 
 
 def _to_anthropic_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -514,6 +535,9 @@ class LLMClient:
             tool_defs = _to_anthropic_tools(self._tools.to_openai_tools())
         # pass_turn is always available
         tool_defs = [*(tool_defs or []), _PASS_TURN_TOOL]
+
+        # Debug: hash system blocks and tools to diagnose cache misses
+        _log_cache_debug(session_id, system_blocks, tool_defs, len(messages))
 
         # Token accumulators across tool rounds
         acc_input = 0
