@@ -34,6 +34,7 @@ from src.memory.group_timeline import GroupTimeline
 from src.memory.history_loader import load_group_history
 from src.memory.image_cache import ImageCache
 from src.memory.memo_store import MemoStore
+from src.memory.message_log import MessageLog
 from src.memory.short_term import ShortTermMemory
 from src.memory.types import Content, ContentBlock, ImageRefBlock, TextBlock
 from src.sticker.store import StickerStore
@@ -54,6 +55,7 @@ _dream: DreamAgent
 _dream_enabled: bool = False
 _scheduler: GroupChatScheduler
 _usage_tracker: UsageTracker
+_message_log: MessageLog
 _identity_mgr: IdentityManager
 _timeline: GroupTimeline
 _short_term: ShortTermMemory
@@ -70,7 +72,7 @@ _startup_triggered: bool = False
 @driver.on_startup
 async def _init() -> None:
     global _llm, _dream, _dream_enabled, _scheduler, _identity_mgr, _usage_tracker
-    global _timeline, _short_term, _allowed_groups, _allowed_private_users, _group_config
+    global _message_log, _timeline, _short_term, _allowed_groups, _allowed_private_users, _group_config
     global _image_cache, _vision_enabled, _max_images_per_message, _sticker_store
 
     bot_config = load_config()
@@ -103,7 +105,6 @@ async def _init() -> None:
     )
     await memo_store.startup()
     _short_term = ShortTermMemory()
-    _timeline = GroupTimeline()
     instruction = load_instruction(bot_config.soul.dir)
     short_term = _short_term
 
@@ -153,6 +154,11 @@ async def _init() -> None:
     if bot_config.llm.usage.enabled:
         await _usage_tracker.init()
 
+    _message_log = MessageLog(db_path="storage/messages.db")
+    await _message_log.init()
+
+    _timeline = GroupTimeline(message_log=_message_log)
+
     _llm = LLMClient(
         base_url=bot_config.llm.base_url,
         api_key=bot_config.llm.api_key,
@@ -168,6 +174,7 @@ async def _init() -> None:
         memo_store=memo_store,
         on_compact=None,
         image_cache=_image_cache if _vision_enabled else None,
+        message_log=_message_log,
     )
     if bot_config.llm.usage.enabled:
         _llm._usage_tracker = _usage_tracker
@@ -194,6 +201,7 @@ async def _shutdown() -> None:
         await _dream.stop()
     await _llm.close()
     await _scheduler.close()
+    await _message_log.close()
     await _usage_tracker.close()
 
 
