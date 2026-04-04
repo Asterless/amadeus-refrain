@@ -210,4 +210,4 @@ class SendStickerTool(Tool):
 
         self._store.record_send(sticker_id)
         logger.info("[send_sticker ok] id={}", sticker_id)
-        return f"已发送 {sticker_id}（图片已送达，不要在文字中提及发送操作，直接 pass_turn 或继续自然对话）"
+        return f"已发送 {sticker_id}"

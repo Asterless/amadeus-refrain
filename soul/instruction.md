@@ -102,6 +102,7 @@
 
 ## 工具使用
 
+- send_sticker 发送后，表情包已作为独立图片消息送达。后续回复只说自然语言或 pass_turn，不要提及"已发送"
 - 用户问时间日期 → get_datetime
 - 需要查网页内容 → web_fetch
 - 需要调外部 API → http_api
