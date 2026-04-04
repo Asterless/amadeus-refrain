@@ -26,6 +26,7 @@ class SaveStickerTool(Tool):
         return (
             "收录一张对话中的图片到你的表情包库。"
             "image_tag 使用图片旁边的 [img:N] 标签。"
+            "只在管理员要求时才调用，必须将管理员QQ号填入 requested_by。"
             "只在你完全理解图片含义、清楚使用场景、且符合自己性格时才调用。"
         )
 
@@ -46,14 +47,22 @@ class SaveStickerTool(Tool):
                     "type": "string",
                     "description": "适合使用该表情包的场景说明",
                 },
+                "requested_by": {
+                    "type": "string",
+                    "description": "发起请求的用户QQ号（群聊中从消息上下文提取）",
+                },
             },
-            "required": ["image_tag", "description", "usage_hint"],
+            "required": ["image_tag", "description", "usage_hint", "requested_by"],
         }
 
     async def execute(self, ctx: ToolContext, **kwargs: Any) -> str:
         image_tag: str = kwargs["image_tag"]
         description: str = kwargs["description"]
         usage_hint: str = kwargs["usage_hint"]
+
+        requester = ctx.user_id or kwargs.get("requested_by", "")
+        if requester not in self._superusers:
+            return "只有管理员可以收录表情包"
 
         tag_map: dict[str, str] = ctx.extra.get("image_tags", {})
         path_str = tag_map.get(image_tag)
@@ -65,10 +74,9 @@ class SaveStickerTool(Tool):
             return f"图片文件已过期: {image_tag}"
 
         image_data = path.read_bytes()
-        source = "admin" if ctx.user_id in self._superusers else "auto"
 
         try:
-            stk_id, is_new = self._store.add(image_data, description, usage_hint, source)
+            stk_id, is_new = self._store.add(image_data, description, usage_hint, source="admin")
         except ValueError as e:
             return f"无法收录: {e}"
 
@@ -90,7 +98,10 @@ class ManageStickerTool(Tool):
 
     @property
     def description(self) -> str:
-        return "管理表情包库：更新表情包的描述/场景说明，或删除表情包。"
+        return (
+            "管理表情包库：更新表情包的描述/场景说明，或删除表情包。"
+            "必须从对话上下文识别是谁在要求操作，将其QQ号填入 requested_by。"
+        )
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -99,12 +110,16 @@ class ManageStickerTool(Tool):
             "properties": {
                 "sticker_id": {
                     "type": "string",
-                    "description": "表情包 ID，如 stk_a1b2c3d4",
+                    "description": "���情包 ID，如 stk_a1b2c3d4",
                 },
                 "action": {
                     "type": "string",
                     "enum": ["update", "delete"],
                     "description": "操作类型",
+                },
+                "requested_by": {
+                    "type": "string",
+                    "description": "发起请求的用户QQ号（群聊中从消息上下文提取）",
                 },
                 "description": {
                     "type": "string",
@@ -112,10 +127,10 @@ class ManageStickerTool(Tool):
                 },
                 "usage_hint": {
                     "type": "string",
-                    "description": "新的场景说明（仅 update 时使用）",
+                    "description": "新的场景说明（仅 update 时使��）",
                 },
             },
-            "required": ["sticker_id", "action"],
+            "required": ["sticker_id", "action", "requested_by"],
         }
 
     async def execute(self, ctx: ToolContext, **kwargs: Any) -> str:
@@ -123,7 +138,8 @@ class ManageStickerTool(Tool):
         action: str = kwargs["action"]
 
         if action == "delete":
-            if ctx.user_id not in self._superusers:
+            requester = ctx.user_id or kwargs.get("requested_by", "")
+            if requester not in self._superusers:
                 return "只有管理员可以删除表情包"
             if self._store.remove(sticker_id):
                 return f"{sticker_id} 已删除"

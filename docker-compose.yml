@@ -10,6 +10,7 @@ services:
     volumes:
       - ./napcat/config:/app/napcat/config
       - ./napcat/data:/app/.config/QQ
+      - ./storage/stickers:/app/storage/stickers:ro
     environment:
       - NAPCAT_GID=0
       - NAPCAT_UID=0

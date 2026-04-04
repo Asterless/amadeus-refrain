@@ -73,7 +73,7 @@ def test_save_sticker_schema(store: StickerStore, superusers: set[str]) -> None:
     assert "image_tag" in props
     assert "description" in props
     assert "usage_hint" in props
-    assert set(schema["required"]) == {"image_tag", "description", "usage_hint"}
+    assert set(schema["required"]) == {"image_tag", "description", "usage_hint", "requested_by"}
 
 
 def test_save_sticker_name_and_description(store: StickerStore, superusers: set[str]) -> None:
@@ -91,7 +91,7 @@ async def test_save_sticker_success(
     store: StickerStore, superusers: set[str], jpeg_file: Path
 ) -> None:
     tool = SaveStickerTool(store, superusers)
-    ctx = _ctx_with_tag("regular_user", "img:1", str(jpeg_file))
+    ctx = _ctx_with_tag("admin1", "img:1", str(jpeg_file))
 
     result = await tool.execute(ctx, image_tag="img:1", description="开心笑", usage_hint="开心���发")
 
@@ -103,7 +103,7 @@ async def test_save_sticker_returns_sticker_id(
     store: StickerStore, superusers: set[str], jpeg_file: Path
 ) -> None:
     tool = SaveStickerTool(store, superusers)
-    ctx = _ctx_with_tag("regular_user", "img:1", str(jpeg_file))
+    ctx = _ctx_with_tag("admin1", "img:1", str(jpeg_file))
 
     result = await tool.execute(ctx, image_tag="img:1", description="开心笑", usage_hint="开心时发")
 
@@ -121,7 +121,7 @@ async def test_save_sticker_dedup(
     store: StickerStore, superusers: set[str], jpeg_file: Path
 ) -> None:
     tool = SaveStickerTool(store, superusers)
-    ctx = _ctx_with_tag("regular_user", "img:1", str(jpeg_file))
+    ctx = _ctx_with_tag("admin1", "img:1", str(jpeg_file))
 
     first = await tool.execute(ctx, image_tag="img:1", description="第一次", usage_hint="hint")
     second = await tool.execute(ctx, image_tag="img:1", description="第二次", usage_hint="hint")
@@ -142,7 +142,7 @@ async def test_save_sticker_gif_rejected(
     store: StickerStore, superusers: set[str], gif_file: Path
 ) -> None:
     tool = SaveStickerTool(store, superusers)
-    ctx = _ctx_with_tag("regular_user", "img:1", str(gif_file))
+    ctx = _ctx_with_tag("admin1", "img:1", str(gif_file))
 
     result = await tool.execute(ctx, image_tag="img:1", description="gif", usage_hint="hint")
 
@@ -159,7 +159,7 @@ async def test_save_sticker_missing_tag(
     store: StickerStore, superusers: set[str]
 ) -> None:
     tool = SaveStickerTool(store, superusers)
-    ctx = ToolContext(user_id="regular_user", extra={"image_tags": {}})
+    ctx = ToolContext(user_id="admin1", extra={"image_tags": {}})
 
     result = await tool.execute(ctx, image_tag="img:99", description="desc", usage_hint="hint")
 
@@ -170,7 +170,7 @@ async def test_save_sticker_expired_file(
     store: StickerStore, superusers: set[str]
 ) -> None:
     tool = SaveStickerTool(store, superusers)
-    ctx = _ctx_with_tag("regular_user", "img:1", "/nonexistent/path/image.jpg")
+    ctx = _ctx_with_tag("admin1", "img:1", "/nonexistent/path/image.jpg")
 
     result = await tool.execute(ctx, image_tag="img:1", description="desc", usage_hint="hint")
 
@@ -197,19 +197,29 @@ async def test_save_sticker_admin_source(
     assert entry["source"] == "admin"
 
 
-async def test_save_sticker_non_admin_source(
+async def test_save_sticker_non_admin_rejected(
     store: StickerStore, superusers: set[str], jpeg_file: Path
 ) -> None:
     tool = SaveStickerTool(store, superusers)
     ctx = _ctx_with_tag("regular_user", "img:1", str(jpeg_file))
 
-    result = await tool.execute(ctx, image_tag="img:1", description="auto添加", usage_hint="hint")
+    result = await tool.execute(ctx, image_tag="img:1", description="test", usage_hint="hint")
+
+    assert "管理员" in result
+
+
+async def test_save_sticker_via_requested_by(
+    store: StickerStore, superusers: set[str], jpeg_file: Path
+) -> None:
+    """Group chat: ctx.user_id is empty but requested_by carries the admin QQ."""
+    tool = SaveStickerTool(store, superusers)
+    ctx = _ctx_with_tag("", "img:1", str(jpeg_file))
+
+    result = await tool.execute(
+        ctx, image_tag="img:1", description="test", usage_hint="hint", requested_by="admin1",
+    )
 
     assert "已收录" in result
-    stk_id = result.split(" ")[0]
-    entry = store.get(stk_id)
-    assert entry is not None
-    assert entry["source"] == "auto"
 
 
 # ---------------------------------------------------------------------------
@@ -223,7 +233,7 @@ def test_manage_sticker_schema(store: StickerStore, superusers: set[str]) -> Non
     assert schema["type"] == "object"
     assert "sticker_id" in schema["properties"]
     assert "action" in schema["properties"]
-    assert set(schema["required"]) == {"sticker_id", "action"}
+    assert set(schema["required"]) == {"sticker_id", "action", "requested_by"}
 
 
 def test_manage_sticker_name(store: StickerStore, superusers: set[str]) -> None:
@@ -333,6 +343,34 @@ async def test_manage_sticker_delete_non_admin_rejected(
 
     assert "管理员" in result
     assert store.get(stk_id) is not None  # not deleted
+
+
+async def test_manage_sticker_delete_via_requested_by(
+    store: StickerStore, superusers: set[str]
+) -> None:
+    """Group chat: ctx.user_id is empty but requested_by carries the admin QQ."""
+    stk_id, _ = store.add(_JPEG_DATA, "desc", "hint")
+    tool = ManageStickerTool(store, superusers)
+    ctx = ToolContext(user_id="")  # scheduler sets empty user_id
+
+    result = await tool.execute(ctx, sticker_id=stk_id, action="delete", requested_by="admin1")
+
+    assert "已删除" in result
+    assert store.get(stk_id) is None
+
+
+async def test_manage_sticker_delete_requested_by_non_admin_rejected(
+    store: StickerStore, superusers: set[str]
+) -> None:
+    """Group chat: requested_by is a non-admin user, should be rejected."""
+    stk_id, _ = store.add(_JPEG_DATA, "desc", "hint")
+    tool = ManageStickerTool(store, superusers)
+    ctx = ToolContext(user_id="")
+
+    result = await tool.execute(ctx, sticker_id=stk_id, action="delete", requested_by="999")
+
+    assert "管理员" in result
+    assert store.get(stk_id) is not None
 
 
 async def test_manage_sticker_delete_not_found(

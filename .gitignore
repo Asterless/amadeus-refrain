@@ -10,6 +10,7 @@ storage/memories/
 storage/logs/
 storage/*.db
 storage/image_cache/
+storage/stickers/
 !storage/.gitkeep
 !storage/memories/.example.qmd
 napcat/data/
