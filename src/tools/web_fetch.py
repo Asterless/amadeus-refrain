@@ -75,9 +75,18 @@ class WebFetchTool(Tool):
         if not _is_safe_url(url):
             return "拒绝访问: 不允许访问内网地址"
 
-        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
-            resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0 QQBot/1.0"})
-            resp.raise_for_status()
+        try:
+            async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+                resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0 QQBot/1.0"})
+        except httpx.TimeoutException:
+            return f"请求超时: 网页在 15 秒内未响应 ({url})"
+        except httpx.ConnectError:
+            return f"连接失败: 无法连接到服务器 ({url})"
+        except httpx.HTTPError as e:
+            return f"请求失败: {type(e).__name__} ({url})"
+
+        if resp.status_code >= 400:
+            return f"请求失败: HTTP {resp.status_code} ({url})"
 
         text = _SCRIPT_STYLE_RE.sub(" ", resp.text)
         text = _TAG_RE.sub(" ", text)

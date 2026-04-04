@@ -139,6 +139,7 @@ async def _init() -> None:
         user_max_chars=bot_config.memo.user_max_chars,
         group_max_chars=bot_config.memo.group_max_chars,
         sticker_store=_sticker_store,
+        on_memo_change=lambda: prompt_builder.invalidate(),
     )
 
     _usage_tracker = UsageTracker(db_path="storage/usage.db")

@@ -131,6 +131,7 @@ class DreamAgent:
         user_max_chars: int = 300,
         group_max_chars: int = 500,
         sticker_store: StickerStore | None = None,
+        on_memo_change: Callable[[], None] | None = None,
     ) -> None:
         self._store = store
         self._interval_hours = interval_hours
@@ -138,6 +139,7 @@ class DreamAgent:
         self._user_max_chars = user_max_chars
         self._group_max_chars = group_max_chars
         self._sticker_store = sticker_store
+        self._on_memo_change = on_memo_change
         self._running: bool = False
         self._loop_task: asyncio.Task[None] | None = None
 
@@ -226,6 +228,7 @@ class DreamAgent:
 
             memo_reads = 0
             memo_writes = 0
+            sticker_deletes = 0
 
             for round_i in range(self._max_rounds):
                 result = await api_call(system, messages, tools, 2048)
@@ -235,8 +238,8 @@ class DreamAgent:
 
                 if not tool_uses:
                     dream_logger.info(
-                        "dream finished | rounds={} reads={} writes={} elapsed={:.1f}s",
-                        round_i + 1, memo_reads, memo_writes, time.time() - t0,
+                        "dream finished | rounds={} reads={} writes={} sticker_del={} elapsed={:.1f}s",
+                        round_i + 1, memo_reads, memo_writes, sticker_deletes, time.time() - t0,
                     )
                     break
 
@@ -262,6 +265,8 @@ class DreamAgent:
                         memo_reads += 1
                     elif tu.name == "update_memo":
                         memo_writes += 1
+                    elif tu.name == "delete_sticker":
+                        sticker_deletes += 1
                     dream_logger.debug(
                         "tool {} | id={} | result={}",
                         tu.name, tu.input.get("id", "?"), result_msg[:80],
@@ -269,11 +274,13 @@ class DreamAgent:
                 messages.append({"role": "user", "content": tool_results})
             else:
                 dream_logger.warning(
-                    "dream exhausted max rounds | reads={} writes={} elapsed={:.1f}s",
-                    memo_reads, memo_writes, time.time() - t0,
+                    "dream exhausted max rounds | reads={} writes={} sticker_del={} elapsed={:.1f}s",
+                    memo_reads, memo_writes, sticker_deletes, time.time() - t0,
                 )
 
             dream_logger.info("dream completed")
+            if (memo_writes > 0 or sticker_deletes > 0) and self._on_memo_change:
+                self._on_memo_change()
         except Exception:
             dream_logger.exception("dream failed")
         finally:

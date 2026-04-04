@@ -635,6 +635,8 @@ class LLMClient:
             # Execute tools in parallel
             tool_ctx = ctx or ToolContext(user_id=user_id, group_id=group_id)
             tool_ctx.extra["image_tags"] = image_tag_map
+            if self._timeline is not None:
+                tool_ctx.extra["timeline"] = self._timeline
             call_results = await asyncio.gather(
                 *[self._tools.call(tu.name, json.dumps(tu.input), ctx=tool_ctx) for tu in tool_uses],
                 return_exceptions=True,
@@ -845,6 +847,10 @@ class LLMClient:
             else:
                 logger.warning("compact produced empty summary | session={}", session_id)
 
+            # Rebuild system blocks so updated memos are reflected
+            if memo_writes > 0 and user_id:
+                self._prompt.invalidate(user_id=user_id)
+
             self._private_compact_failures = 0
             if self._on_compact:
                 self._on_compact()
@@ -940,6 +946,10 @@ class LLMClient:
                 )
             else:
                 logger.warning("compact_group produced empty summary | group={}", group_id)
+
+            # Rebuild system blocks so updated memos are reflected
+            if memo_writes > 0:
+                self._prompt.invalidate(group_id=group_id)
 
             self._group_compact_failures = 0
             if self._on_compact:

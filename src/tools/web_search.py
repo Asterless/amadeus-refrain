@@ -66,5 +66,5 @@ def _ddg_search_sync(query: str, max_results: int) -> list[dict[str, str]]:
         warnings.simplefilter("ignore", RuntimeWarning)
         from duckduckgo_search import DDGS
 
-    d = DDGS()
+        d = DDGS()
     return d.text(query, max_results=max_results)  # type: ignore[return-value]

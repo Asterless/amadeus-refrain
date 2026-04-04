@@ -3,7 +3,7 @@
 Cache layout (4 breakpoints):
   ① tools[-1]                          — global shared
   ② system block 1: personality+instr  — global shared, built once at startup
-  ③ system block 2: index+entity memo  — per-entity
+  ③ system block 2: index+entity memo  — per-entity, built on first use + compact
   ④ messages[near-end]                 — per-conversation
 """
 
@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+from loguru import logger
 
 from src.identity.models import Identity
 from src.memory.memo_store import MemoStore
@@ -38,6 +40,7 @@ class PromptBuilder:
         self._admins = admins or {}
         self._sticker_store = sticker_store
         self._static_block: dict[str, Any] = {}
+        self._block_cache: dict[str, list[dict[str, Any]]] = {}
 
     @property
     def static_block(self) -> dict[str, Any]:
@@ -78,7 +81,16 @@ class PromptBuilder:
         group_id: str | None,
         memo_store: MemoStore,
     ) -> list[dict[str, Any]]:
-        """Returns [static_block, entity_block]. Called per chat()."""
+        """Returns [static_block, entity_block].
+
+        Results are cached per entity key. Use invalidate() to force rebuild
+        (e.g. after compact updates memos).
+        """
+        key = f"group_{group_id}" if group_id else f"user_{user_id}"
+        cached = self._block_cache.get(key)
+        if cached is not None:
+            return cached
+
         text = f"【全局索引】\n{memo_store.serialize_index()}"
         if group_id:
             memo = memo_store.read(f"group_{group_id}")
@@ -97,4 +109,32 @@ class PromptBuilder:
             "text": text,
             "cache_control": {"type": "ephemeral"},
         }
-        return [self._static_block, entity_block]
+        blocks = [self._static_block, entity_block]
+        self._block_cache[key] = blocks
+        logger.info("system blocks built | key={}", key)
+        return blocks
+
+    def invalidate(
+        self,
+        *,
+        group_id: str | None = None,
+        user_id: str | None = None,
+    ) -> None:
+        """Clear cached blocks, forcing rebuild on next build_blocks() call.
+
+        Called after compact updates memos. Pass group_id or user_id to
+        invalidate a specific entity, or neither to clear all.
+        """
+        if group_id:
+            key = f"group_{group_id}"
+        elif user_id:
+            key = f"user_{user_id}"
+        else:
+            count = len(self._block_cache)
+            self._block_cache.clear()
+            if count:
+                logger.info("system blocks invalidated | all ({} entries)", count)
+            return
+
+        if self._block_cache.pop(key, None) is not None:
+            logger.info("system blocks invalidated | key={}", key)

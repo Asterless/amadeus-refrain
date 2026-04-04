@@ -82,6 +82,18 @@ class SaveStickerTool(Tool):
 
         if not is_new:
             return f"表情包已存在: {stk_id}"
+
+        # Notify timeline so the model can use this sticker in future calls
+        # (system blocks are read-only, rebuilt only on compact)
+        timeline = ctx.extra.get("timeline")
+        if timeline and ctx.group_id:
+            timeline.add(
+                ctx.group_id,
+                role="user",
+                speaker="【系统】",
+                content=f"新增表情包 «表情包:{stk_id}» {description} | {usage_hint}",
+            )
+
         return f"{stk_id} 已收录"
 
 
