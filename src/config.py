@@ -41,6 +41,26 @@ class SoulConfig(BaseModel):
     dir: str = "soul"
 
 
+class ResolvedGroupConfig(BaseModel):
+    """resolve() 返回的扁平群配置，所有字段已合并。"""
+
+    blocked_users: set[int] = set()
+    at_only: bool = False
+    debounce_seconds: float = 5.0
+    batch_size: int = 10
+    history_load_count: int = 30
+
+
+class GroupOverride(BaseModel):
+    """单个群的覆盖配置，None 表示使用全局值。"""
+
+    blocked_users: list[int] = []
+    at_only: bool | None = None
+    debounce_seconds: float | None = None
+    batch_size: int | None = None
+    history_load_count: int | None = None
+
+
 class GroupConfig(BaseModel):
     """群聊上下文配置。"""
 
@@ -48,6 +68,29 @@ class GroupConfig(BaseModel):
     allowed_groups: list[int] = []
     debounce_seconds: float = 5.0
     batch_size: int = 10
+    at_only: bool = False
+    blocked_users: list[int] = []
+    overrides: dict[int, GroupOverride] = {}
+
+    def resolve(self, group_id: int) -> ResolvedGroupConfig:
+        """合并全局默认值与单群覆盖，返回最终生效配置。"""
+        base_blocked = set(self.blocked_users)
+        override = self.overrides.get(group_id)
+        if override is None:
+            return ResolvedGroupConfig(
+                blocked_users=base_blocked,
+                at_only=self.at_only,
+                debounce_seconds=self.debounce_seconds,
+                batch_size=self.batch_size,
+                history_load_count=self.history_load_count,
+            )
+        return ResolvedGroupConfig(
+            blocked_users=base_blocked | set(override.blocked_users),
+            at_only=override.at_only if override.at_only is not None else self.at_only,
+            debounce_seconds=override.debounce_seconds if override.debounce_seconds is not None else self.debounce_seconds,
+            batch_size=override.batch_size if override.batch_size is not None else self.batch_size,
+            history_load_count=override.history_load_count if override.history_load_count is not None else self.history_load_count,
+        )
 
 
 class NapcatConfig(BaseModel):

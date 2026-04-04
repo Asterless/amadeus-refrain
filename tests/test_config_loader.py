@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from src.config import BotConfig
+from src.config import BotConfig, GroupConfig, GroupOverride, ResolvedGroupConfig
 from src.config_loader import load_config
 
 # ---------------------------------------------------------------------------
@@ -268,5 +268,113 @@ def test_compact_config_rejects_invalid_ratio():
         CompactConfig(ratio=1.5)
     with pytest.raises(ValueError):
         CompactConfig(compress_ratio=0.0)
+
+
+# ---------------------------------------------------------------------------
+# GroupConfig.resolve() tests
+# ---------------------------------------------------------------------------
+
+
+class TestGroupConfigResolve:
+    def test_resolve_no_override(self) -> None:
+        """No override for group — returns global defaults."""
+        cfg = GroupConfig(
+            debounce_seconds=5.0, batch_size=10, at_only=False,
+            blocked_users=[100], history_load_count=30,
+        )
+        resolved = cfg.resolve(999)
+        assert resolved.blocked_users == {100}
+        assert resolved.at_only is False
+        assert resolved.debounce_seconds == 5.0
+        assert resolved.batch_size == 10
+        assert resolved.history_load_count == 30
+
+    def test_resolve_full_override(self) -> None:
+        """Override supplies all fields — all override values win."""
+        cfg = GroupConfig(
+            debounce_seconds=5.0, batch_size=10, blocked_users=[100],
+            overrides={
+                123: GroupOverride(
+                    blocked_users=[200], at_only=True,
+                    debounce_seconds=10.0, batch_size=20, history_load_count=50,
+                ),
+            },
+        )
+        resolved = cfg.resolve(123)
+        assert resolved.blocked_users == {100, 200}
+        assert resolved.at_only is True
+        assert resolved.debounce_seconds == 10.0
+        assert resolved.batch_size == 20
+        assert resolved.history_load_count == 50
+
+    def test_resolve_partial_override_falls_back(self) -> None:
+        """Override only sets at_only — rest falls back to global."""
+        cfg = GroupConfig(
+            debounce_seconds=5.0, batch_size=10,
+            overrides={123: GroupOverride(at_only=True)},
+        )
+        resolved = cfg.resolve(123)
+        assert resolved.at_only is True
+        assert resolved.debounce_seconds == 5.0
+        assert resolved.batch_size == 10
+        assert resolved.history_load_count == 30
+
+    def test_resolve_blocked_users_union(self) -> None:
+        """blocked_users is the union of global and per-group lists."""
+        cfg = GroupConfig(
+            blocked_users=[1, 2],
+            overrides={123: GroupOverride(blocked_users=[2, 3])},
+        )
+        resolved = cfg.resolve(123)
+        assert resolved.blocked_users == {1, 2, 3}
+
+    def test_resolve_override_at_only_false_overrides_global_true(self) -> None:
+        """Per-group at_only=False overrides global at_only=True."""
+        cfg = GroupConfig(
+            at_only=True,
+            overrides={123: GroupOverride(at_only=False)},
+        )
+        resolved = cfg.resolve(123)
+        assert resolved.at_only is False
+
+
+def test_group_overrides_from_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """TOML [group.overrides.<id>] sections parse into GroupConfig.overrides."""
+    monkeypatch.delenv("BOT_CONFIG_PATH", raising=False)
+    toml_file = tmp_path / "config.toml"
+    _write_toml(
+        toml_file,
+        """
+[group]
+blocked_users = [100]
+at_only = false
+
+[group.overrides.100001]
+blocked_users = [200, 300]
+at_only = true
+debounce_seconds = 10.0
+
+[group.overrides.100002]
+batch_size = 20
+history_load_count = 50
+""",
+    )
+    cfg = load_config(config_path=str(toml_file))
+
+    assert cfg.group.blocked_users == [100]
+    assert cfg.group.at_only is False
+
+    assert 100001 in cfg.group.overrides
+    o1 = cfg.group.overrides[100001]
+    assert o1.blocked_users == [200, 300]
+    assert o1.at_only is True
+    assert o1.debounce_seconds == 10.0
+    assert o1.batch_size is None
+
+    assert 100002 in cfg.group.overrides
+    o2 = cfg.group.overrides[100002]
+    assert o2.batch_size == 20
+    assert o2.history_load_count == 50
+    assert o2.at_only is None
 
 
