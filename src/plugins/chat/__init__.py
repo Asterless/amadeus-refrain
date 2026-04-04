@@ -224,28 +224,40 @@ async def _on_connect(bot: Bot) -> None:
             cache_alert_cooldown_m=bot_config.compact.cache_alert_cooldown_m,
         )
 
+    global _startup_triggered
+    is_first_connect = not _startup_triggered
+
     try:
         group_list: list[dict[str, object]] = await bot.get_group_list()
         group_ids = [str(g["group_id"]) for g in group_list]
         if _allowed_groups:
             group_ids = [gid for gid in group_ids if int(gid) in _allowed_groups]
-        logger.info("loading history | groups={}", len(group_ids))
-        counts = {gid: _group_config.resolve(int(gid)).history_load_count for gid in group_ids}
-        await load_group_history(
-            napcat_url=bot_config.napcat.api_url,
-            group_ids=group_ids,
-            timeline=_timeline,
-            count=bot_config.group.history_load_count,
-            bot_self_id=bot.self_id,
-            image_cache=_image_cache if _vision_enabled else None,
-            sticker_store=_sticker_store,
-            counts=counts,
-        )
     except Exception:
-        logger.exception("failed to load group history")
+        logger.exception("failed to get group list")
         return
-    if _dream_enabled:
-        _dream.start(_llm._call)
+
+    if is_first_connect:
+        _startup_triggered = True
+        logger.info("loading history | groups={}", len(group_ids))
+        try:
+            counts = {gid: _group_config.resolve(int(gid)).history_load_count for gid in group_ids}
+            await load_group_history(
+                napcat_url=bot_config.napcat.api_url,
+                group_ids=group_ids,
+                timeline=_timeline,
+                count=bot_config.group.history_load_count,
+                bot_self_id=bot.self_id,
+                image_cache=_image_cache if _vision_enabled else None,
+                sticker_store=_sticker_store,
+                counts=counts,
+            )
+        except Exception:
+            logger.exception("failed to load group history")
+            return
+        if _dream_enabled:
+            _dream.start(_llm._call)
+    else:
+        logger.info("reconnected, skipping history reload (already loaded)")
 
     # Check bot mute status in each group
     muted_count = 0
@@ -267,9 +279,7 @@ async def _on_connect(bot: Bot) -> None:
     logger.info("Bot 就绪，开始接收消息 ✓")
 
     # Evaluate history for each group — catch up on missed messages (first connect only)
-    global _startup_triggered
-    if not _startup_triggered:
-        _startup_triggered = True
+    if is_first_connect:
         for gid in group_ids:
             if _timeline.get_messages(gid):
                 _scheduler.trigger(gid)
