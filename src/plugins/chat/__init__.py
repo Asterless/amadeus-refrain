@@ -10,6 +10,7 @@ from nonebot import get_driver, on_message
 from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, Message, MessageEvent
 from nonebot.rule import to_me
 
+from src.config import GroupConfig
 from src.config_loader import load_config
 from src.constants.qq_face import face_to_text
 from src.identity import IdentityManager
@@ -51,6 +52,7 @@ _identity_mgr: IdentityManager
 _timeline: GroupTimeline
 _short_term: ShortTermMemory
 _allowed_groups: set[int] = set()
+_group_config: GroupConfig = GroupConfig()
 _allowed_private_users: set[int] = set()
 _image_cache: ImageCache
 _vision_enabled: bool = True
@@ -61,11 +63,12 @@ _sticker_store: StickerStore | None = None
 @driver.on_startup
 async def _init() -> None:
     global _llm, _dream, _dream_enabled, _scheduler, _identity_mgr, _usage_tracker
-    global _timeline, _short_term, _allowed_groups, _allowed_private_users
+    global _timeline, _short_term, _allowed_groups, _allowed_private_users, _group_config
     global _image_cache, _vision_enabled, _max_images_per_message, _sticker_store
 
     bot_config = load_config()
     _allowed_groups = set(bot_config.group.allowed_groups)
+    _group_config = bot_config.group
     _allowed_private_users = set(bot_config.allowed_private_users)
 
     _image_cache = ImageCache(
@@ -219,6 +222,7 @@ async def _on_connect(bot: Bot) -> None:
         if _allowed_groups:
             group_ids = [gid for gid in group_ids if int(gid) in _allowed_groups]
         logger.info("loading history | groups={}", len(group_ids))
+        counts = {gid: _group_config.resolve(int(gid)).history_load_count for gid in group_ids}
         await load_group_history(
             napcat_url=bot_config.napcat.api_url,
             group_ids=group_ids,
@@ -227,6 +231,7 @@ async def _on_connect(bot: Bot) -> None:
             bot_self_id=bot.self_id,
             image_cache=_image_cache if _vision_enabled else None,
             sticker_store=_sticker_store,
+            counts=counts,
         )
     except Exception:
         logger.exception("failed to load group history")
@@ -351,6 +356,10 @@ async def collect_group_context(bot: Bot, event: GroupMessageEvent) -> None:
         return
     # Skip bot's own messages — already added as role="assistant" by LLMClient
     if str(event.user_id) == bot.self_id:
+        return
+    # Check per-group blocked users
+    resolved = _group_config.resolve(event.group_id)
+    if event.user_id in resolved.blocked_users:
         return
     content = await _render_message(event.get_message(), reply=event.reply, session=_llm._session, self_id=bot.self_id)
     if not content:
