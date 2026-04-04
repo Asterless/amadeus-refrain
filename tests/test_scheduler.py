@@ -2,6 +2,7 @@
 
 import asyncio
 
+from src.config import GroupConfig, GroupOverride
 from src.identity.models import Identity
 from src.llm.scheduler import GroupChatScheduler
 from src.memory.group_timeline import GroupTimeline
@@ -40,10 +41,10 @@ class TestNotify:
         identity = _make_identity(proactive=None)
         scheduler = GroupChatScheduler(
             llm=_FakeLLM(), timeline=GroupTimeline(), identity_mgr=_FakeIdentityMgr(identity),  # type: ignore[arg-type]
-            debounce_seconds=0.05, batch_size=100,
+            group_config=GroupConfig(debounce_seconds=0.05, batch_size=100),
         )
-        scheduler.notify("g1")
-        assert "g1" not in scheduler._slots
+        scheduler.notify("111")
+        assert "111" not in scheduler._slots
         await scheduler.close()
 
     async def test_debounce_fires(self) -> None:
@@ -51,9 +52,9 @@ class TestNotify:
         llm = _FakeLLM(reply=None)
         scheduler = GroupChatScheduler(
             llm=llm, timeline=GroupTimeline(), identity_mgr=_FakeIdentityMgr(_make_identity()),  # type: ignore[arg-type]
-            debounce_seconds=0.05, batch_size=100,
+            group_config=GroupConfig(debounce_seconds=0.05, batch_size=100),
         )
-        scheduler.notify("g1")
+        scheduler.notify("111")
         await asyncio.sleep(0.15)
         assert len(llm.calls) == 1
         await scheduler.close()
@@ -63,11 +64,11 @@ class TestNotify:
         llm = _FakeLLM(reply=None)
         scheduler = GroupChatScheduler(
             llm=llm, timeline=GroupTimeline(), identity_mgr=_FakeIdentityMgr(_make_identity()),  # type: ignore[arg-type]
-            debounce_seconds=999, batch_size=3,
+            group_config=GroupConfig(debounce_seconds=999, batch_size=3),
         )
-        scheduler.notify("g1")
-        scheduler.notify("g1")
-        scheduler.notify("g1")
+        scheduler.notify("111")
+        scheduler.notify("111")
+        scheduler.notify("111")
         await asyncio.sleep(0.1)
         assert len(llm.calls) == 1
         await scheduler.close()
@@ -77,12 +78,12 @@ class TestNotify:
         llm = _FakeLLM(reply=None)
         scheduler = GroupChatScheduler(
             llm=llm, timeline=GroupTimeline(), identity_mgr=_FakeIdentityMgr(_make_identity()),  # type: ignore[arg-type]
-            debounce_seconds=0.05, batch_size=100,
+            group_config=GroupConfig(debounce_seconds=0.05, batch_size=100),
         )
-        scheduler.notify("g1")
+        scheduler.notify("111")
         await asyncio.sleep(0.15)  # debounce fires, running_task starts
         assert len(llm.calls) == 1
-        scheduler.notify("g1")  # while running_task is active (or just finished)
+        scheduler.notify("111")  # while running_task is active (or just finished)
         # msg_count incremented but no new debounce if running_task is still set
         # (depends on timing, so just verify no crash)
         await scheduler.close()
@@ -94,9 +95,9 @@ class TestAtHandling:
         llm = _FakeLLM(reply=None)
         scheduler = GroupChatScheduler(
             llm=llm, timeline=GroupTimeline(), identity_mgr=_FakeIdentityMgr(_make_identity()),  # type: ignore[arg-type]
-            debounce_seconds=999, batch_size=100,
+            group_config=GroupConfig(debounce_seconds=999, batch_size=100),
         )
-        scheduler.notify("g1", is_at=True)
+        scheduler.notify("111", is_at=True)
         await asyncio.sleep(0.1)
         assert len(llm.calls) == 1
         await scheduler.close()
@@ -106,11 +107,11 @@ class TestAtHandling:
         llm = _FakeLLM(reply=None)
         scheduler = GroupChatScheduler(
             llm=llm, timeline=GroupTimeline(), identity_mgr=_FakeIdentityMgr(_make_identity()),  # type: ignore[arg-type]
-            debounce_seconds=999, batch_size=100,
+            group_config=GroupConfig(debounce_seconds=999, batch_size=100),
         )
-        scheduler.notify("g1")  # starts debounce
-        assert scheduler._slots["g1"].debounce_task is not None
-        scheduler.notify("g1", is_at=True)  # cancels debounce, fires immediately
+        scheduler.notify("111")  # starts debounce
+        assert scheduler._slots["111"].debounce_task is not None
+        scheduler.notify("111", is_at=True)  # cancels debounce, fires immediately
         await asyncio.sleep(0.1)
         assert len(llm.calls) == 1
         await scheduler.close()
@@ -120,13 +121,13 @@ class TestAtHandling:
         llm = _FakeLLM(reply=None, delay=0.5)
         scheduler = GroupChatScheduler(
             llm=llm, timeline=GroupTimeline(), identity_mgr=_FakeIdentityMgr(_make_identity()),  # type: ignore[arg-type]
-            debounce_seconds=0.05, batch_size=100,
+            group_config=GroupConfig(debounce_seconds=0.05, batch_size=100),
         )
-        scheduler.notify("g1")  # debounce
+        scheduler.notify("111")  # debounce
         await asyncio.sleep(0.15)  # fires, running_task active
         assert len(llm.calls) == 1
-        scheduler.notify("g1", is_at=True)  # should queue
-        assert scheduler._slots["g1"].pending_at is True
+        scheduler.notify("111", is_at=True)  # should queue
+        assert scheduler._slots["111"].pending_at is True
         await scheduler.close()
 
     async def test_pending_at_fires_after_completion(self) -> None:
@@ -134,15 +135,15 @@ class TestAtHandling:
         llm = _FakeLLM(reply=None, delay=0.2)
         scheduler = GroupChatScheduler(
             llm=llm, timeline=GroupTimeline(), identity_mgr=_FakeIdentityMgr(_make_identity()),  # type: ignore[arg-type]
-            debounce_seconds=0.05, batch_size=100,
+            group_config=GroupConfig(debounce_seconds=0.05, batch_size=100),
         )
-        scheduler.notify("g1")
+        scheduler.notify("111")
         await asyncio.sleep(0.15)  # first call fires (debounce done, chat starts)
         assert len(llm.calls) == 1
-        scheduler.notify("g1", is_at=True)  # queued as pending_at
+        scheduler.notify("111", is_at=True)  # queued as pending_at
         await asyncio.sleep(0.4)  # first call finishes, pending fires
         assert len(llm.calls) == 2
-        assert scheduler._slots["g1"].pending_at is False
+        assert scheduler._slots["111"].pending_at is False
         await scheduler.close()
 
 
@@ -152,11 +153,99 @@ class TestClose:
         llm = _FakeLLM(reply=None)
         scheduler = GroupChatScheduler(
             llm=llm, timeline=GroupTimeline(), identity_mgr=_FakeIdentityMgr(_make_identity()),  # type: ignore[arg-type]
-            debounce_seconds=999, batch_size=100,
+            group_config=GroupConfig(debounce_seconds=999, batch_size=100),
         )
-        scheduler.notify("g1")
-        scheduler.notify("g2")
+        scheduler.notify("111")
+        scheduler.notify("222")
         await scheduler.close()
         # After close, debounce tasks should be cancelled
         for slot in scheduler._slots.values():
             assert slot.debounce_task is None or slot.debounce_task.cancelled()
+
+
+class TestAtOnly:
+    async def test_at_only_skips_debounce(self) -> None:
+        """at_only=True: non-@ messages don't trigger debounce or batch."""
+        llm = _FakeLLM(reply=None)
+        group_config = GroupConfig(at_only=True, debounce_seconds=0.05, batch_size=3)
+        scheduler = GroupChatScheduler(
+            llm=llm, timeline=GroupTimeline(), identity_mgr=_FakeIdentityMgr(_make_identity()),  # type: ignore[arg-type]
+            group_config=group_config,
+        )
+        scheduler.notify("123")
+        scheduler.notify("123")
+        scheduler.notify("123")  # reaches batch_size but at_only blocks it
+        await asyncio.sleep(0.15)
+        assert len(llm.calls) == 0
+        await scheduler.close()
+
+    async def test_at_only_still_fires_on_at(self) -> None:
+        """at_only=True: @ messages still fire immediately."""
+        llm = _FakeLLM(reply=None)
+        group_config = GroupConfig(at_only=True, debounce_seconds=999, batch_size=100)
+        scheduler = GroupChatScheduler(
+            llm=llm, timeline=GroupTimeline(), identity_mgr=_FakeIdentityMgr(_make_identity()),  # type: ignore[arg-type]
+            group_config=group_config,
+        )
+        scheduler.notify("123", is_at=True)
+        await asyncio.sleep(0.1)
+        assert len(llm.calls) == 1
+        await scheduler.close()
+
+    async def test_per_group_at_only_override(self) -> None:
+        """Group 123 is at_only, group 456 is not."""
+        llm = _FakeLLM(reply=None)
+        group_config = GroupConfig(
+            at_only=False, debounce_seconds=0.05, batch_size=100,
+            overrides={123: GroupOverride(at_only=True)},
+        )
+        scheduler = GroupChatScheduler(
+            llm=llm, timeline=GroupTimeline(), identity_mgr=_FakeIdentityMgr(_make_identity()),  # type: ignore[arg-type]
+            group_config=group_config,
+        )
+        scheduler.notify("123")  # at_only group — no debounce
+        scheduler.notify("456")  # normal group — debounce starts
+        await asyncio.sleep(0.15)
+        assert len(llm.calls) == 1  # only group 456 fired
+        assert llm.calls[0]["session_id"] == "group_456"
+        await scheduler.close()
+
+
+class TestPerGroupParams:
+    async def test_per_group_debounce(self) -> None:
+        """Group 123 has 0.3s debounce (override), group 456 uses global 0.05s."""
+        llm = _FakeLLM(reply=None)
+        group_config = GroupConfig(
+            debounce_seconds=0.05, batch_size=100,
+            overrides={123: GroupOverride(debounce_seconds=0.3)},
+        )
+        scheduler = GroupChatScheduler(
+            llm=llm, timeline=GroupTimeline(), identity_mgr=_FakeIdentityMgr(_make_identity()),  # type: ignore[arg-type]
+            group_config=group_config,
+        )
+        scheduler.notify("123")
+        scheduler.notify("456")
+        await asyncio.sleep(0.15)
+        # group 456 (0.05s debounce) should have fired, group 123 (0.3s) not yet
+        assert len(llm.calls) == 1
+        assert llm.calls[0]["session_id"] == "group_456"
+        await asyncio.sleep(0.3)
+        assert len(llm.calls) == 2
+        await scheduler.close()
+
+    async def test_per_group_batch_size(self) -> None:
+        """Group 123 has batch_size=2 (override), global is 100."""
+        llm = _FakeLLM(reply=None)
+        group_config = GroupConfig(
+            debounce_seconds=999, batch_size=100,
+            overrides={123: GroupOverride(batch_size=2)},
+        )
+        scheduler = GroupChatScheduler(
+            llm=llm, timeline=GroupTimeline(), identity_mgr=_FakeIdentityMgr(_make_identity()),  # type: ignore[arg-type]
+            group_config=group_config,
+        )
+        scheduler.notify("123")
+        scheduler.notify("123")  # hits batch_size=2
+        await asyncio.sleep(0.1)
+        assert len(llm.calls) == 1
+        await scheduler.close()

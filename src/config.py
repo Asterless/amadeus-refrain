@@ -84,12 +84,13 @@ class GroupConfig(BaseModel):
                 batch_size=self.batch_size,
                 history_load_count=self.history_load_count,
             )
+        o = override
         return ResolvedGroupConfig(
-            blocked_users=base_blocked | set(override.blocked_users),
-            at_only=override.at_only if override.at_only is not None else self.at_only,
-            debounce_seconds=override.debounce_seconds if override.debounce_seconds is not None else self.debounce_seconds,
-            batch_size=override.batch_size if override.batch_size is not None else self.batch_size,
-            history_load_count=override.history_load_count if override.history_load_count is not None else self.history_load_count,
+            blocked_users=base_blocked | set(o.blocked_users),
+            at_only=o.at_only if o.at_only is not None else self.at_only,
+            debounce_seconds=o.debounce_seconds if o.debounce_seconds is not None else self.debounce_seconds,
+            batch_size=o.batch_size if o.batch_size is not None else self.batch_size,
+            history_load_count=o.history_load_count if o.history_load_count is not None else self.history_load_count,
         )
 
 

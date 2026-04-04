@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from src.config import BotConfig, GroupConfig, GroupOverride, ResolvedGroupConfig
+from src.config import BotConfig, GroupConfig, GroupOverride
 from src.config_loader import load_config
 
 # ---------------------------------------------------------------------------

@@ -173,8 +173,7 @@ async def _init() -> None:
         llm=_llm,
         timeline=_timeline,
         identity_mgr=_identity_mgr,
-        debounce_seconds=bot_config.group.debounce_seconds,
-        batch_size=bot_config.group.batch_size,
+        group_config=bot_config.group,
     )
 
 

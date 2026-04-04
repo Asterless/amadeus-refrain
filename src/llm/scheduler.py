@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from loguru import logger
 
+from src.config import GroupConfig
 from src.llm.client import _RATE_LIMIT_BASE_DELAY, _RATE_LIMIT_MAX_RETRIES, RateLimitError
 from src.memory.group_timeline import GroupTimeline
 from src.tools.context import ToolContext
@@ -36,14 +37,12 @@ class GroupChatScheduler:
         llm: LLMClient,
         timeline: GroupTimeline,
         identity_mgr: IdentityManager,
-        debounce_seconds: float = 5.0,
-        batch_size: int = 10,
+        group_config: GroupConfig,
     ) -> None:
         self._llm = llm
         self._timeline = timeline
         self._identity_mgr = identity_mgr
-        self._debounce_seconds = debounce_seconds
-        self._batch_size = batch_size
+        self._group_config = group_config
         self._slots: dict[str, _GroupSlot] = {}
         self._bot: Bot | None = None
 
@@ -60,6 +59,8 @@ class GroupChatScheduler:
         if identity.proactive is None:
             return
 
+        resolved = self._group_config.resolve(int(group_id))
+
         slot = self._slots.setdefault(group_id, _GroupSlot())
         slot.msg_count += 1
 
@@ -68,14 +69,17 @@ class GroupChatScheduler:
                 slot.pending_at = True
                 logger.debug("scheduler | group={} @ queued (task running)", group_id)
                 return
-            # Cancel pending debounce and fire immediately
             if slot.debounce_task and not slot.debounce_task.done():
                 slot.debounce_task.cancel()
             logger.info("scheduler | group={} @ -> fire", group_id)
             self._fire(group_id)
             return
 
-        # Non-@ path: debounce / batch (unchanged)
+        # at_only mode: only respond to @ messages
+        if resolved.at_only:
+            logger.debug("scheduler | group={} at_only, skip (msgs={})", group_id, slot.msg_count)
+            return
+
         if slot.running_task and not slot.running_task.done():
             logger.debug("scheduler | group={} busy, skip (msgs={})", group_id, slot.msg_count)
             return
@@ -83,12 +87,14 @@ class GroupChatScheduler:
         if slot.debounce_task and not slot.debounce_task.done():
             slot.debounce_task.cancel()
 
-        if slot.msg_count >= self._batch_size:
+        if slot.msg_count >= resolved.batch_size:
             logger.info("scheduler | group={} batch full ({} msgs) -> fire", group_id, slot.msg_count)
             self._fire(group_id)
         else:
             logger.debug("scheduler | group={} debounce start (msgs={})", group_id, slot.msg_count)
-            slot.debounce_task = asyncio.create_task(self._debounce(group_id))
+            slot.debounce_task = asyncio.create_task(
+                self._debounce(group_id, resolved.debounce_seconds)
+            )
 
     def trigger(self, group_id: str) -> None:
         """Immediately fire a chat for this group (no debounce). Used at startup."""
@@ -117,9 +123,9 @@ class GroupChatScheduler:
     # Internal
     # ------------------------------------------------------------------
 
-    async def _debounce(self, group_id: str) -> None:
+    async def _debounce(self, group_id: str, seconds: float) -> None:
         try:
-            await asyncio.sleep(self._debounce_seconds)
+            await asyncio.sleep(seconds)
             slot = self._slots.get(group_id)
             if slot and slot.msg_count > 0:
                 logger.info("scheduler | group={} debounce fired ({} msgs)", group_id, slot.msg_count)
