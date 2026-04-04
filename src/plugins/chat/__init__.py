@@ -36,7 +36,7 @@ from src.tools.datetime_tool import DateTimeTool
 from src.tools.group_admin import MuteUserTool, SendGroupMsgTool, SetTitleTool
 from src.tools.http_api import HttpApiTool
 from src.tools.memo_tools import RecallMemoTool, UpdateMemoTool
-from src.tools.sticker_tools import SaveStickerTool, SendStickerTool
+from src.tools.sticker_tools import ManageStickerTool, SaveStickerTool, SendStickerTool
 from src.tools.web_fetch import WebFetchTool
 from src.tools.web_search import WebSearchTool
 
@@ -112,6 +112,7 @@ async def _init() -> None:
     if _sticker_store is not None:
         tools.register(SaveStickerTool(_sticker_store, superusers))
         tools.register(SendStickerTool(_sticker_store))
+        tools.register(ManageStickerTool(_sticker_store, superusers))
 
     _identity_mgr = IdentityManager()
     soul_dir = bot_config.soul.dir

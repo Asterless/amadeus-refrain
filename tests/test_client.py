@@ -450,12 +450,13 @@ async def test_resolve_image_refs_none_cache() -> None:
         {"type": "text", "text": "hi"},
         {"type": "image_ref", "path": "x.jpg", "media_type": "image/jpeg"},
     ]}]
-    result = await _resolve_image_refs(msgs, None)
+    result, tag_map = await _resolve_image_refs(msgs, None)
     assert result[0]["content"][1]["type"] == "image_ref"  # unchanged
+    assert tag_map == {}
 
 
 async def test_resolve_image_refs_resolves_to_base64() -> None:
-    """image_ref blocks should be converted to base64 image blocks."""
+    """image_ref blocks should be converted to base64 with [img:N] tag."""
     mock_cache = AsyncMock()
     mock_cache.load_as_base64.return_value = {
         "type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "abc123"},
@@ -464,9 +465,12 @@ async def test_resolve_image_refs_resolves_to_base64() -> None:
         {"type": "text", "text": "看"},
         {"type": "image_ref", "path": "x.jpg", "media_type": "image/jpeg"},
     ]}]
-    result = await _resolve_image_refs(msgs, mock_cache)
-    assert result[0]["content"][1]["type"] == "image"
-    assert result[0]["content"][1]["source"]["data"] == "abc123"
+    result, tag_map = await _resolve_image_refs(msgs, mock_cache)
+    # [0]=text "看", [1]=tag hint "[img:1]", [2]=image
+    assert result[0]["content"][1] == {"type": "text", "text": "[img:1]"}
+    assert result[0]["content"][2]["type"] == "image"
+    assert result[0]["content"][2]["source"]["data"] == "abc123"
+    assert tag_map == {"img:1": "x.jpg"}
 
 
 async def test_resolve_image_refs_expired() -> None:
@@ -476,9 +480,10 @@ async def test_resolve_image_refs_expired() -> None:
     msgs = [{"role": "user", "content": [
         {"type": "image_ref", "path": "gone.jpg", "media_type": "image/jpeg"},
     ]}]
-    result = await _resolve_image_refs(msgs, mock_cache)
+    result, tag_map = await _resolve_image_refs(msgs, mock_cache)
     assert result[0]["content"][0]["type"] == "text"
     assert "过期" in result[0]["content"][0]["text"]
+    assert tag_map == {}
 
 
 async def test_resolve_image_refs_preserves_cache_control() -> None:
@@ -491,8 +496,10 @@ async def test_resolve_image_refs_preserves_cache_control() -> None:
         {"type": "image_ref", "path": "x.jpg", "media_type": "image/jpeg",
          "cache_control": {"type": "ephemeral"}},
     ]}]
-    result = await _resolve_image_refs(msgs, mock_cache)
-    assert result[0]["content"][0]["cache_control"] == {"type": "ephemeral"}
+    result, tag_map = await _resolve_image_refs(msgs, mock_cache)
+    # [0]=tag hint, [1]=image with cache_control
+    assert result[0]["content"][1]["cache_control"] == {"type": "ephemeral"}
+    assert tag_map == {"img:1": "x.jpg"}
 
 
 @pytest.mark.parametrize("raw, expected", [

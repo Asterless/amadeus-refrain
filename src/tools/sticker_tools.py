@@ -1,4 +1,4 @@
-"""Sticker tools: SaveStickerTool and SendStickerTool for sticker library management."""
+"""Sticker tools: save, send, and manage stickers in the library."""
 
 from pathlib import Path
 from typing import Any
@@ -11,7 +11,7 @@ from src.tools.context import ToolContext
 
 
 class SaveStickerTool(Tool):
-    """Save an image to the sticker library."""
+    """Save an image from the conversation to the sticker library."""
 
     def __init__(self, store: StickerStore, superusers: set[str]) -> None:
         self._store = store
@@ -23,16 +23,20 @@ class SaveStickerTool(Tool):
 
     @property
     def description(self) -> str:
-        return "收录一张表情包到你的表情包库。只在你完全理解图片含义、清楚使用场景、且符合自己性格时才调用。"
+        return (
+            "收录一张对话中的图片到你的表情包库。"
+            "image_tag 使用图片旁边的 [img:N] 标签。"
+            "只在你完全理解图片含义、清楚使用场景、且符合自己性格时才调用。"
+        )
 
     @property
     def parameters(self) -> dict[str, Any]:
         return {
             "type": "object",
             "properties": {
-                "image_ref": {
+                "image_tag": {
                     "type": "string",
-                    "description": "图片在磁盘上的路径（来自 image_ref 块）",
+                    "description": "对话中图片的标签，如 img:3",
                 },
                 "description": {
                     "type": "string",
@@ -43,17 +47,22 @@ class SaveStickerTool(Tool):
                     "description": "适合使用该表情包的场景说明",
                 },
             },
-            "required": ["image_ref", "description", "usage_hint"],
+            "required": ["image_tag", "description", "usage_hint"],
         }
 
     async def execute(self, ctx: ToolContext, **kwargs: Any) -> str:
-        image_ref: str = kwargs["image_ref"]
+        image_tag: str = kwargs["image_tag"]
         description: str = kwargs["description"]
         usage_hint: str = kwargs["usage_hint"]
 
-        path = Path(image_ref)
+        tag_map: dict[str, str] = ctx.extra.get("image_tags", {})
+        path_str = tag_map.get(image_tag)
+        if not path_str:
+            return f"图片标签不存在: {image_tag}（可用标签: {', '.join(tag_map) or '无'}）"
+
+        path = Path(path_str)
         if not path.exists():
-            return f"图片文件不存在: {image_ref}"
+            return f"图片文件已过期: {image_tag}"
 
         image_data = path.read_bytes()
         source = "admin" if ctx.user_id in self._superusers else "auto"
@@ -66,6 +75,70 @@ class SaveStickerTool(Tool):
         if not is_new:
             return f"表情包已存在: {stk_id}"
         return f"{stk_id} 已收录"
+
+
+class ManageStickerTool(Tool):
+    """Update or delete stickers in the library."""
+
+    def __init__(self, store: StickerStore, superusers: set[str]) -> None:
+        self._store = store
+        self._superusers = superusers
+
+    @property
+    def name(self) -> str:
+        return "manage_sticker"
+
+    @property
+    def description(self) -> str:
+        return "管理表情包库：更新表情包的描述/场景说明，或删除表情包。"
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "sticker_id": {
+                    "type": "string",
+                    "description": "表情包 ID，如 stk_a1b2c3d4",
+                },
+                "action": {
+                    "type": "string",
+                    "enum": ["update", "delete"],
+                    "description": "操作类型",
+                },
+                "description": {
+                    "type": "string",
+                    "description": "新的内容描述（仅 update 时使用）",
+                },
+                "usage_hint": {
+                    "type": "string",
+                    "description": "新的场景说明（仅 update 时使用）",
+                },
+            },
+            "required": ["sticker_id", "action"],
+        }
+
+    async def execute(self, ctx: ToolContext, **kwargs: Any) -> str:
+        sticker_id: str = kwargs["sticker_id"]
+        action: str = kwargs["action"]
+
+        if action == "delete":
+            if ctx.user_id not in self._superusers:
+                return "只有管理员可以删除表情包"
+            if self._store.remove(sticker_id):
+                return f"{sticker_id} 已删除"
+            return f"表情包不存在: {sticker_id}"
+
+        if action == "update":
+            description: str | None = kwargs.get("description")
+            usage_hint: str | None = kwargs.get("usage_hint")
+            if description is None and usage_hint is None:
+                return "请提供 description 或 usage_hint"
+            if self._store.update(sticker_id, description, usage_hint):
+                return f"{sticker_id} 已更新"
+            return f"表情包不存在: {sticker_id}"
+
+        return f"未知操作: {action}"
 
 
 class SendStickerTool(Tool):

@@ -183,6 +183,26 @@ class StickerStore:
         self._save_index()
         return True
 
+    def update(
+        self,
+        sticker_id: str,
+        description: str | None = None,
+        usage_hint: str | None = None,
+    ) -> bool:
+        """Update description and/or usage_hint for a sticker.
+
+        Returns True if the sticker was found and updated, False otherwise.
+        """
+        entry = self._index.get(sticker_id)
+        if entry is None:
+            return False
+        if description is not None:
+            entry["description"] = description
+        if usage_hint is not None:
+            entry["usage_hint"] = usage_hint
+        self._save_index()
+        return True
+
     def record_send(self, sticker_id: str) -> None:
         """Increment send_count and update last_sent timestamp."""
         entry = self._index.get(sticker_id)

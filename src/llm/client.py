@@ -96,13 +96,18 @@ def _content_text(content: Content) -> str:
 async def _resolve_image_refs(
     messages: list[dict[str, Any]],
     image_cache: ImageCache | None,
-) -> list[dict[str, Any]]:
-    """Convert image_ref blocks to Anthropic image blocks (base64)."""
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    """Convert image_ref blocks to Anthropic image blocks (base64).
+
+    Returns (messages, image_tag_map) where image_tag_map maps "img:N" to disk paths.
+    """
+    image_tag_map: dict[str, str] = {}
     if image_cache is None:
-        return messages
+        return messages, image_tag_map
 
     t0 = time.perf_counter()
     resolved_count = 0
+    tag_counter = 0
 
     for msg in messages:
         content = msg.get("content")
@@ -131,6 +136,10 @@ async def _resolve_image_refs(
             cache_ctrl = orig_block.get("cache_control")
             resolved = task.result()
             if resolved is not None:
+                tag_counter += 1
+                tag = f"img:{tag_counter}"
+                image_tag_map[tag] = orig_block["path"]
+                new_content.append({"type": "text", "text": f"[{tag}]"})
                 if cache_ctrl:
                     resolved = {**resolved, "cache_control": cache_ctrl}
                 new_content.append(resolved)
@@ -144,9 +153,9 @@ async def _resolve_image_refs(
 
     if resolved_count:
         elapsed_ms = (time.perf_counter() - t0) * 1000
-        logger.debug("resolve_image_refs | images={} elapsed={:.0f}ms", resolved_count, elapsed_ms)
+        logger.debug("resolve_image_refs | images={} tags={} elapsed={:.0f}ms", resolved_count, tag_counter, elapsed_ms)
 
-    return messages
+    return messages, image_tag_map
 
 
 def _hash_json(obj: Any) -> str:
@@ -537,7 +546,7 @@ class LLMClient:
         else:
             system_blocks = [self._prompt.static_block]
 
-        messages = await _resolve_image_refs(messages, self._image_cache)
+        messages, image_tag_map = await _resolve_image_refs(messages, self._image_cache)
 
         tool_defs: list[dict[str, Any]] | None = None
         if not self._tools.empty:
@@ -625,6 +634,7 @@ class LLMClient:
 
             # Execute tools in parallel
             tool_ctx = ctx or ToolContext(user_id=user_id, group_id=group_id)
+            tool_ctx.extra["image_tags"] = image_tag_map
             call_results = await asyncio.gather(
                 *[self._tools.call(tu.name, json.dumps(tu.input), ctx=tool_ctx) for tu in tool_uses],
                 return_exceptions=True,

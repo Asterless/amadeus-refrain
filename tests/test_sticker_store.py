@@ -1,5 +1,7 @@
 """Tests for StickerConfig and StickerStore."""
 
+from pathlib import Path
+
 import pytest
 
 from src.config import BotConfig, StickerConfig
@@ -275,6 +277,50 @@ def test_record_send_updates_last_sent(store: StickerStore) -> None:
 def test_record_send_nonexistent_is_noop(store: StickerStore) -> None:
     # Should not raise
     store.record_send("stk_00000000")
+
+
+# ------------------------------------------------------------------
+# update()
+# ------------------------------------------------------------------
+
+
+def test_update_description(store: StickerStore) -> None:
+    sid, _ = store.add(_JPEG_DATA, "old desc", "old hint")
+    assert store.update(sid, description="new desc")
+    entry = store.get(sid)
+    assert entry is not None
+    assert entry["description"] == "new desc"
+    assert entry["usage_hint"] == "old hint"
+
+
+def test_update_usage_hint(store: StickerStore) -> None:
+    sid, _ = store.add(_JPEG_DATA, "desc", "old hint")
+    assert store.update(sid, usage_hint="new hint")
+    entry = store.get(sid)
+    assert entry is not None
+    assert entry["usage_hint"] == "new hint"
+    assert entry["description"] == "desc"
+
+
+def test_update_both(store: StickerStore) -> None:
+    sid, _ = store.add(_JPEG_DATA, "old", "old")
+    assert store.update(sid, description="new desc", usage_hint="new hint")
+    entry = store.get(sid)
+    assert entry is not None
+    assert entry["description"] == "new desc"
+    assert entry["usage_hint"] == "new hint"
+
+
+def test_update_nonexistent(store: StickerStore) -> None:
+    assert not store.update("stk_nonexist", description="x")
+
+
+def test_update_persists(tmp_path: Path) -> None:
+    store1 = StickerStore(storage_dir=str(tmp_path / "stickers"))
+    sid, _ = store1.add(_JPEG_DATA, "old", "old")
+    store1.update(sid, description="new")
+    store2 = StickerStore(storage_dir=str(tmp_path / "stickers"))
+    assert store2.get(sid)["description"] == "new"  # type: ignore[index]
 
 
 # ------------------------------------------------------------------
