@@ -359,7 +359,7 @@ def test_format_prompt_view_nonempty(store: StickerStore) -> None:
     sid, _ = store.add(_JPEG_DATA, "开心大笑", "搞笑对话时", source="auto")
     view = store.format_prompt_view()
     assert "当前表情包库：" in view
-    assert f"[表情包:{sid}]" in view
+    assert f"<<表情包:{sid}>>" in view
     assert "开心大笑" in view
     assert "搞笑对话时" in view
 

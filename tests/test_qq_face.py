@@ -10,12 +10,12 @@ def test_known_face_ids() -> None:
 
 
 def test_face_to_text_known() -> None:
-    assert face_to_text(14) == "[微笑]"
-    assert face_to_text(178) == "[捂脸]"
+    assert face_to_text(14) == "<<微笑>>"
+    assert face_to_text(178) == "<<捂脸>>"
 
 
 def test_face_to_text_unknown() -> None:
-    assert face_to_text(99999) == "[表情]"
+    assert face_to_text(99999) == "<<表情>>"
 
 
 def test_mapping_has_common_faces() -> None:

@@ -2,7 +2,7 @@
 
 Reference: QQ face IDs from OneBot V11 / NapCat protocol.
 Face segments arrive as {"type": "face", "data": {"id": "14"}}.
-Unknown IDs fall back to generic [表情].
+Unknown IDs fall back to generic <<表情>>.
 """
 
 QQ_FACE: dict[int, str] = {
@@ -184,6 +184,6 @@ QQ_FACE: dict[int, str] = {
 
 
 def face_to_text(face_id: int) -> str:
-    """Convert a QQ face ID to a bracketed Chinese text label."""
+    """Convert a QQ face ID to an angle-bracketed Chinese text label."""
     name = QQ_FACE.get(face_id, "表情")
-    return f"[{name}]"
+    return f"<<{name}>>"

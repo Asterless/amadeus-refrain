@@ -114,7 +114,7 @@ async def _extract_content(
             try:
                 text_parts.append(face_to_text(int(face_id)))
             except (ValueError, TypeError):
-                text_parts.append("[表情]")
+                text_parts.append("<<表情>>")
         elif seg_type == "image" and image_cache is not None:
             url = seg_data.get("url", "")
             file_id = seg_data.get("file", "")
@@ -124,9 +124,9 @@ async def _extract_content(
                     asyncio.ensure_future(image_cache.save(session, url=url, file_id=file_id))
                 )
             else:
-                text_parts.append("[图片]")
+                text_parts.append("<<图片>>")
         elif seg_type == "image":
-            text_parts.append("[图片]")
+            text_parts.append("<<图片>>")
 
     # Resolve all image downloads concurrently
     images: list[ImageRefBlock] = []
@@ -135,7 +135,7 @@ async def _extract_content(
         results = await asyncio.gather(*image_tasks, return_exceptions=True)
         for r in results:
             if isinstance(r, BaseException) or r is None:
-                text_parts.append("[图片]")
+                text_parts.append("<<图片>>")
             else:
                 # Check if the downloaded image matches a known sticker
                 if sticker_store is not None and image_cache is not None:

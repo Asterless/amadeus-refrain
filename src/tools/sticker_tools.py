@@ -25,7 +25,7 @@ class SaveStickerTool(Tool):
     def description(self) -> str:
         return (
             "收录一张对话中的图片到你的表情包库。"
-            "image_tag 使用图片旁边的 [img:N] 标签。"
+            "image_tag 使用图片旁边的 <<img:N>> 标签。"
             "只在管理员要求时才调用，必须将管理员QQ号填入 requested_by。"
             "只在你完全理解图片含义、清楚使用场景、且符合自己性格时才调用。"
         )
@@ -197,6 +197,7 @@ class SendStickerTool(Tool):
         from nonebot.adapters.onebot.v11 import MessageSegment
 
         img_seg = MessageSegment.image(file_path)
+        img_seg.data["subType"] = 1
 
         try:
             if ctx.group_id:
@@ -208,4 +209,5 @@ class SendStickerTool(Tool):
             return f"发送失败: {sticker_id}"
 
         self._store.record_send(sticker_id)
-        return f"已发送表情包 {sticker_id}"
+        logger.info("[send_sticker ok] id={}", sticker_id)
+        return f"已发送 {sticker_id}（图片已送达，不要在文字中提及发送操作，直接 pass_turn 或继续自然对话）"

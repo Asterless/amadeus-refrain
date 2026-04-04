@@ -89,7 +89,7 @@ async def test_build_blocks_includes_sticker_index(
     pb.build_static(identity, bot_self_id="999")
     blocks = await pb.build_blocks(user_id="100", group_id=None, memo_store=store)
     entity_text = blocks[1]["text"]
-    assert "[表情包:stk_" in entity_text
+    assert "<<表情包:stk_" in entity_text
     assert "开心大笑" in entity_text
     assert sid in entity_text
 

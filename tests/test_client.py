@@ -466,8 +466,8 @@ async def test_resolve_image_refs_resolves_to_base64() -> None:
         {"type": "image_ref", "path": "x.jpg", "media_type": "image/jpeg"},
     ]}]
     result, tag_map = await _resolve_image_refs(msgs, mock_cache)
-    # [0]=text "看", [1]=tag hint "[img:1]", [2]=image
-    assert result[0]["content"][1] == {"type": "text", "text": "[img:1]"}
+    # [0]=text "看", [1]=tag hint "<<img:1>>", [2]=image
+    assert result[0]["content"][1] == {"type": "text", "text": "<<img:1>>"}
     assert result[0]["content"][2]["type"] == "image"
     assert result[0]["content"][2]["source"]["data"] == "abc123"
     assert tag_map == {"img:1": "x.jpg"}

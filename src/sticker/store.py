@@ -229,6 +229,6 @@ class StickerStore:
         for sticker_id, entry in self._index.items():
             description = entry.get("description", "")
             usage_hint = entry.get("usage_hint", "")
-            lines.append(f"[表情包:{sticker_id}] {description} | {usage_hint}")
+            lines.append(f"<<表情包:{sticker_id}>> {description} | {usage_hint}")
 
         return "\n".join(lines)

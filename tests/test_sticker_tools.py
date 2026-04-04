@@ -419,13 +419,16 @@ async def test_send_sticker_group_success(
     with patch("nonebot.adapters.onebot.v11.MessageSegment.image", return_value=fake_seg) as mock_image:
         result = await tool.execute(ctx, sticker_id=stk_id)
 
-    assert f"已发送表情包 {stk_id}" == result
+    assert f"已发送 {stk_id}" in result
     mock_bot.send_group_msg.assert_awaited_once()
     mock_bot.send_private_msg.assert_not_awaited()
 
     # Verify the file path was passed to MessageSegment.image
     call_args = mock_image.call_args
     assert call_args is not None
+
+    # Verify subType=1 was set for sticker rendering
+    fake_seg.data.__setitem__.assert_any_call("subType", 1)
 
 
 # ---------------------------------------------------------------------------
@@ -444,7 +447,7 @@ async def test_send_sticker_private_success(
     with patch("nonebot.adapters.onebot.v11.MessageSegment.image", return_value=fake_seg):
         result = await tool.execute(ctx, sticker_id=stk_id)
 
-    assert f"已发送表情包 {stk_id}" == result
+    assert f"已发送 {stk_id}" in result
     mock_bot.send_private_msg.assert_awaited_once()
     mock_bot.send_group_msg.assert_not_awaited()
 
