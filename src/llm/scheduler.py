@@ -45,9 +45,36 @@ class GroupChatScheduler:
         self._group_config = group_config
         self._slots: dict[str, _GroupSlot] = {}
         self._bot: Bot | None = None
+        self._muted_groups: set[str] = set()
 
     def set_bot(self, bot: Bot) -> None:
         self._bot = bot
+
+    # ------------------------------------------------------------------
+    # Mute management
+    # ------------------------------------------------------------------
+
+    def mute(self, group_id: str) -> None:
+        """Mark group as muted — cancel pending tasks, block future fires."""
+        self._muted_groups.add(group_id)
+        slot = self._slots.get(group_id)
+        if slot:
+            for task in (slot.debounce_task, slot.running_task):
+                if task and not task.done():
+                    task.cancel()
+            slot.debounce_task = None
+            slot.running_task = None
+            slot.msg_count = 0
+            slot.pending_at = False
+        logger.info("scheduler | group={} muted, tasks cancelled", group_id)
+
+    def unmute(self, group_id: str) -> None:
+        """Unmark group as muted — resume normal scheduling."""
+        self._muted_groups.discard(group_id)
+        logger.info("scheduler | group={} unmuted", group_id)
+
+    def is_muted(self, group_id: str) -> bool:
+        return group_id in self._muted_groups
 
     # ------------------------------------------------------------------
     # Public API
@@ -55,6 +82,8 @@ class GroupChatScheduler:
 
     def notify(self, group_id: str, *, is_at: bool = False) -> None:
         """Called on every group message. Manages debounce/batch."""
+        if group_id in self._muted_groups:
+            return
         identity = self._identity_mgr.resolve()
         if identity.proactive is None:
             return
@@ -98,6 +127,8 @@ class GroupChatScheduler:
 
     def trigger(self, group_id: str) -> None:
         """Immediately fire a chat for this group (no debounce). Used at startup."""
+        if group_id in self._muted_groups:
+            return
         identity = self._identity_mgr.resolve()
         if identity.proactive is None:
             return
@@ -151,6 +182,9 @@ class GroupChatScheduler:
         delay = 2.0
         max_delay = 60.0
         while True:
+            if group_id in self._muted_groups:
+                logger.warning("scheduler | group={} muted, dropping message", group_id)
+                return
             try:
                 await self._bot.send_group_msg(group_id=int(group_id), message=Message(text))
                 return

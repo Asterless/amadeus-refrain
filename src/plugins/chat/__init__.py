@@ -6,8 +6,14 @@ from datetime import timedelta
 
 import aiohttp
 from loguru import logger
-from nonebot import get_driver, on_message
-from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, Message, MessageEvent
+from nonebot import get_driver, on_message, on_notice
+from nonebot.adapters.onebot.v11 import (
+    Bot,
+    GroupBanNoticeEvent,
+    GroupMessageEvent,
+    Message,
+    MessageEvent,
+)
 from nonebot.rule import to_me
 
 from src.config import GroupConfig
@@ -58,6 +64,7 @@ _image_cache: ImageCache
 _vision_enabled: bool = True
 _max_images_per_message: int = 5
 _sticker_store: StickerStore | None = None
+_startup_triggered: bool = False
 
 
 @driver.on_startup
@@ -240,12 +247,32 @@ async def _on_connect(bot: Bot) -> None:
     if _dream_enabled:
         _dream.start(_llm._call)
 
+    # Check bot mute status in each group
+    muted_count = 0
+    for gid in group_ids:
+        try:
+            info: dict[str, object] = await bot.get_group_member_info(
+                group_id=int(gid), user_id=int(bot.self_id),
+            )
+            raw = info.get("shut_up_timestamp") or 0
+            shut_until = int(str(raw))
+            if shut_until > time.time():
+                _scheduler.mute(gid)
+                muted_count += 1
+        except Exception:
+            logger.debug("failed to query mute status | group={}", gid)
+    if muted_count:
+        logger.info("muted in {} group(s) at startup", muted_count)
+
     logger.info("Bot 就绪，开始接收消息 ✓")
 
-    # Evaluate history for each group — catch up on missed messages
-    for gid in group_ids:
-        if _timeline.get_messages(gid):
-            _scheduler.trigger(gid)
+    # Evaluate history for each group — catch up on missed messages (first connect only)
+    global _startup_triggered
+    if not _startup_triggered:
+        _startup_triggered = True
+        for gid in group_ids:
+            if _timeline.get_messages(gid):
+                _scheduler.trigger(gid)
 
 
 def _session_id(event: MessageEvent) -> str:
@@ -358,6 +385,9 @@ async def collect_group_context(bot: Bot, event: GroupMessageEvent) -> None:
     # Skip bot's own messages — already added as role="assistant" by LLMClient
     if str(event.user_id) == bot.self_id:
         return
+    # Muted — pause listening entirely
+    if _scheduler.is_muted(str(event.group_id)):
+        return
     # Check per-group blocked users
     resolved = _group_config.resolve(event.group_id)
     if event.user_id in resolved.blocked_users:
@@ -383,6 +413,24 @@ async def collect_group_context(bot: Bot, event: GroupMessageEvent) -> None:
     )
 
     _scheduler.notify(group_id, is_at=event.is_tome())
+
+
+# ── 群禁言监听 ──
+
+ban_notice = on_notice(priority=1, block=False)
+
+
+@ban_notice.handle()
+async def handle_group_ban(bot: Bot, event: GroupBanNoticeEvent) -> None:
+    if str(event.user_id) != bot.self_id:
+        return
+    group_id = str(event.group_id)
+    if event.sub_type == "ban":
+        _scheduler.mute(group_id)
+        logger.warning("bot muted | group={} duration={}s", group_id, event.duration)
+    elif event.sub_type == "lift_ban":
+        _scheduler.unmute(group_id)
+        logger.info("bot unmuted | group={}", group_id)
 
 
 # ── 私聊 ──

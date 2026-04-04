@@ -249,3 +249,95 @@ class TestPerGroupParams:
         await asyncio.sleep(0.1)
         assert len(llm.calls) == 1
         await scheduler.close()
+
+
+class TestMute:
+    async def test_muted_group_skips_notify(self) -> None:
+        """notify is a no-op for muted groups."""
+        llm = _FakeLLM(reply=None)
+        scheduler = GroupChatScheduler(
+            llm=llm, timeline=GroupTimeline(), identity_mgr=_FakeIdentityMgr(_make_identity()),  # type: ignore[arg-type]
+            group_config=GroupConfig(debounce_seconds=0.05, batch_size=100),
+        )
+        scheduler.mute("111")
+        scheduler.notify("111")
+        scheduler.notify("111", is_at=True)
+        await asyncio.sleep(0.15)
+        assert len(llm.calls) == 0
+        await scheduler.close()
+
+    async def test_muted_group_skips_trigger(self) -> None:
+        """trigger is a no-op for muted groups."""
+        llm = _FakeLLM(reply=None)
+        scheduler = GroupChatScheduler(
+            llm=llm, timeline=GroupTimeline(), identity_mgr=_FakeIdentityMgr(_make_identity()),  # type: ignore[arg-type]
+            group_config=GroupConfig(debounce_seconds=0.05, batch_size=100),
+        )
+        scheduler.mute("111")
+        scheduler.trigger("111")
+        await asyncio.sleep(0.1)
+        assert len(llm.calls) == 0
+        await scheduler.close()
+
+    async def test_unmute_resumes_scheduling(self) -> None:
+        """After unmute, notify works again."""
+        llm = _FakeLLM(reply=None)
+        scheduler = GroupChatScheduler(
+            llm=llm, timeline=GroupTimeline(), identity_mgr=_FakeIdentityMgr(_make_identity()),  # type: ignore[arg-type]
+            group_config=GroupConfig(debounce_seconds=0.05, batch_size=100),
+        )
+        scheduler.mute("111")
+        scheduler.notify("111")
+        await asyncio.sleep(0.1)
+        assert len(llm.calls) == 0
+
+        scheduler.unmute("111")
+        scheduler.notify("111")
+        await asyncio.sleep(0.15)
+        assert len(llm.calls) == 1
+        await scheduler.close()
+
+    async def test_mute_cancels_running_tasks(self) -> None:
+        """Muting a group cancels its pending debounce and running tasks."""
+        llm = _FakeLLM(reply=None, delay=1.0)
+        scheduler = GroupChatScheduler(
+            llm=llm, timeline=GroupTimeline(), identity_mgr=_FakeIdentityMgr(_make_identity()),  # type: ignore[arg-type]
+            group_config=GroupConfig(debounce_seconds=0.05, batch_size=100),
+        )
+        scheduler.notify("111")
+        await asyncio.sleep(0.15)  # debounce fires, running_task starts
+        assert len(llm.calls) == 1
+        scheduler.mute("111")
+        slot = scheduler._slots["111"]
+        assert slot.running_task is None
+        assert slot.msg_count == 0
+        assert slot.pending_at is False
+        await scheduler.close()
+
+    async def test_is_muted(self) -> None:
+        """is_muted returns correct state."""
+        scheduler = GroupChatScheduler(
+            llm=_FakeLLM(), timeline=GroupTimeline(), identity_mgr=_FakeIdentityMgr(_make_identity()),  # type: ignore[arg-type]
+            group_config=GroupConfig(),
+        )
+        assert not scheduler.is_muted("111")
+        scheduler.mute("111")
+        assert scheduler.is_muted("111")
+        scheduler.unmute("111")
+        assert not scheduler.is_muted("111")
+        await scheduler.close()
+
+    async def test_mute_only_affects_target_group(self) -> None:
+        """Muting group 111 does not affect group 222."""
+        llm = _FakeLLM(reply=None)
+        scheduler = GroupChatScheduler(
+            llm=llm, timeline=GroupTimeline(), identity_mgr=_FakeIdentityMgr(_make_identity()),  # type: ignore[arg-type]
+            group_config=GroupConfig(debounce_seconds=0.05, batch_size=100),
+        )
+        scheduler.mute("111")
+        scheduler.notify("111")
+        scheduler.notify("222")
+        await asyncio.sleep(0.15)
+        assert len(llm.calls) == 1
+        assert llm.calls[0]["session_id"] == "group_222"
+        await scheduler.close()
