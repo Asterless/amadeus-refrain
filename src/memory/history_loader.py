@@ -25,13 +25,15 @@ async def load_group_history(
     bot_self_id: str = "",
     image_cache: ImageCache | None = None,
     sticker_store: StickerStore | None = None,
+    counts: dict[str, int] | None = None,
 ) -> None:
     """从 NapCat 拉取多个群的历史消息。"""
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
         for gid in group_ids:
+            gid_count = counts.get(gid, count) if counts else count
             try:
                 await _load_one_group(
-                    session, napcat_url, gid, timeline, count, bot_self_id, image_cache, sticker_store
+                    session, napcat_url, gid, timeline, gid_count, bot_self_id, image_cache, sticker_store
                 )
             except Exception:
                 logger.warning("load_history failed | group={}", gid, exc_info=True)
