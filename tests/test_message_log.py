@@ -49,7 +49,6 @@ async def test_record_and_query(log: MessageLog) -> None:
 
 async def test_query_respects_time_bound(log: MessageLog) -> None:
     """Insert 2 records with a time gap, query with cutoff, verify only older returned."""
-    t1 = time.time()
     await log.record(
         group_id="111",
         role="user",

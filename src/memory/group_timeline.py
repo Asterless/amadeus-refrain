@@ -67,27 +67,6 @@ def _merge_user_contents(batch: list[TimelineMessage]) -> Content:
     return merged
 
 
-def _merge_assistant_contents(parts: list[Content]) -> Content:
-    """Merge consecutive assistant message contents into one.
-
-    Returns str if all parts are plain text, otherwise list[ContentBlock].
-    """
-    if len(parts) == 1:
-        return parts[0]
-
-    has_blocks = any(isinstance(p, list) for p in parts)
-    if not has_blocks:
-        return "\n".join(p for p in parts if isinstance(p, str))
-
-    merged: list[ContentBlock] = []
-    for p in parts:
-        if isinstance(p, str):
-            merged.append(TextBlock(type="text", text=p))
-        else:
-            merged.extend(p)
-    return merged
-
-
 # ------------------------------------------------------------------
 # _TurnLog — append-only Sequence[dict[str, Any]]
 # ------------------------------------------------------------------
@@ -273,79 +252,6 @@ class GroupTimeline:
         if 0 <= index < len(state.turn_times):
             return state.turn_times[index]
         return 0.0
-
-    # ------------------------------------------------------------------
-    # Backward-compatible accessors (used by client.py — will be removed)
-    # ------------------------------------------------------------------
-
-    def get_messages(self, group_id: str) -> list[TimelineMessage]:
-        """Return raw messages list (DEPRECATED — use get_turns)."""
-        if group_id not in self._store:
-            return []
-        state = self._store[group_id]
-        # Reconstruct from turns + pending for backward compat
-        result: list[TimelineMessage] = []
-        for turn in state.turns:
-            result.append(
-                TimelineMessage(
-                    role=turn["role"],
-                    speaker=None,
-                    content=turn["content"],
-                )
-            )
-        result.extend(state.pending)
-        return result
-
-    def to_anthropic_messages(self, group_id: str) -> list[dict[str, Any]]:
-        """Convert timeline to Anthropic messages format (DEPRECATED)."""
-        if group_id not in self._store:
-            return []
-        state = self._store[group_id]
-
-        # Build raw turn list (turns + any pending user messages)
-        raw: list[dict[str, Any]] = list(state.turns)
-        if state.pending:
-            user_content = _merge_user_contents(state.pending)
-            raw.append({"role": "user", "content": user_content})
-
-        # Merge consecutive same-role turns (e.g. history reload may produce
-        # consecutive assistant turns)
-        if not raw:
-            return []
-        result: list[dict[str, Any]] = []
-        i = 0
-        while i < len(raw):
-            role = raw[i]["role"]
-            if role == "assistant":
-                parts: list[Content] = []
-                while i < len(raw) and raw[i]["role"] == "assistant":
-                    parts.append(raw[i]["content"])
-                    i += 1
-                result.append({"role": "assistant", "content": _merge_assistant_contents(parts)})
-            else:
-                # User turns are already merged at flush time; just collect consecutive
-                contents: list[Content] = []
-                while i < len(raw) and raw[i]["role"] == "user":
-                    contents.append(raw[i]["content"])
-                    i += 1
-                if len(contents) == 1:
-                    result.append({"role": "user", "content": contents[0]})
-                else:
-                    # Merge multiple consecutive user turns (shouldn't normally happen
-                    # but handle gracefully)
-                    merged: list[ContentBlock] = []
-                    for c in contents:
-                        if isinstance(c, str):
-                            merged.append(TextBlock(type="text", text=c))
-                        else:
-                            merged.extend(c)
-                    if len(merged) == 1 and merged[0]["type"] == "text":
-                        result.append({"role": "user", "content": merged[0].get("text", "")})
-                    elif merged:
-                        result.append({"role": "user", "content": merged})
-                    else:
-                        result.append({"role": "user", "content": ""})
-        return result
 
     # ------------------------------------------------------------------
     # Summary & token management

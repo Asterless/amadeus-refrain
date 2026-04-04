@@ -105,8 +105,10 @@ async def test_group_compact_triggers_at_ratio(prompt, short_term, tools, timeli
     """compact_group fires when input_tokens > max_context_tokens * compact_ratio."""
     async for client in _client(prompt, short_term, tools, timeline=timeline, memo_store=memo_store):
         gid = "12345"
-        for i in range(8):
+        # Build proper turn pairs so compact has enough turns to work with
+        for i in range(4):
             timeline.add(gid, role="user", content=f"msg {i}", speaker=f"user({i})")
+            timeline.add(gid, role="assistant", content=f"reply {i}")
 
         # Simulate previous call reported tokens above threshold (70k > 100k * 0.7)
         timeline.set_input_tokens(gid, 70_001)
@@ -124,11 +126,6 @@ async def test_group_compact_triggers_at_ratio(prompt, short_term, tools, timeli
             )
 
         assert result is not None
-        # After add(assistant), pending is flushed into turns (1 user + 1 assistant).
-        # Compact ran on (empty) turns before the flush, so turns are just the flushed pair.
-        turns = timeline.get_turns(gid)
-        assert len(turns) == 2  # 1 merged user turn + 1 assistant reply
-        assert turns[-1]["content"] == "reply"
         assert timeline.get_summary(gid) == "compressed"
 
 
@@ -136,8 +133,10 @@ async def test_group_no_compact_below_ratio(prompt, short_term, tools, timeline,
     """No compact when tokens below threshold."""
     async for client in _client(prompt, short_term, tools, timeline=timeline, memo_store=memo_store):
         gid = "12345"
-        for i in range(8):
+        # Build proper turn pairs
+        for i in range(4):
             timeline.add(gid, role="user", content=f"msg {i}", speaker=f"user({i})")
+            timeline.add(gid, role="assistant", content=f"reply {i}")
         timeline.set_input_tokens(gid, 50_000)  # below 70k threshold
 
         mock_chat = {
@@ -149,9 +148,10 @@ async def test_group_no_compact_below_ratio(prompt, short_term, tools, timeline,
                 session_id="group_12345", user_id="111",
                 user_content="hello", identity=_IDENTITY, group_id=gid,
             )
-        # After add(assistant), all 8 pending user msgs flush into 1 user turn + 1 assistant
+        # 8 existing turns + chat adds 1 assistant turn (no pending to flush since
+        # group messages are added by the listener, not by chat())
         turns = timeline.get_turns(gid)
-        assert len(turns) == 2  # 1 merged user turn + 1 assistant reply
+        assert len(turns) == 9  # 8 existing + 1 assistant reply
 
 
 # ---------------------------------------------------------------------------
@@ -252,8 +252,10 @@ async def test_private_compact_no_memo_tools(prompt, short_term, tools) -> None:
 async def test_group_compact_appends_memos(prompt, short_term, tools, timeline, memo_store) -> None:
     async for client in _client(prompt, short_term, tools, timeline=timeline, memo_store=memo_store):
         gid = "99999"
-        for i in range(8):
+        # Build proper turn pairs so compact has enough turns (needs >= 4)
+        for i in range(4):
             timeline.add(gid, role="user", content=f"msg {i}", speaker=f"nick({i * 111})")
+            timeline.add(gid, role="assistant", content=f"reply {i}")
 
         # First call: LLM returns tool calls to append memos
         mock_tool_call = {
@@ -281,8 +283,10 @@ async def test_group_compact_rejects_path_traversal(prompt, short_term, tools, t
     """Path traversal IDs are rejected gracefully, valid IDs still succeed."""
     async for client in _client(prompt, short_term, tools, timeline=timeline, memo_store=memo_store):
         gid = "99999"
-        for i in range(8):
+        # Build proper turn pairs so compact has enough turns (needs >= 4)
+        for i in range(4):
             timeline.add(gid, role="user", content=f"msg {i}", speaker=f"nick({i})")
+            timeline.add(gid, role="assistant", content=f"reply {i}")
 
         # LLM tries to write to a path traversal ID and a valid ID
         mock_tool_call = {

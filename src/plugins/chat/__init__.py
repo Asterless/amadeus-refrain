@@ -281,7 +281,7 @@ async def _on_connect(bot: Bot) -> None:
     # Evaluate history for each group — catch up on missed messages (first connect only)
     if is_first_connect:
         for gid in group_ids:
-            if _timeline.get_messages(gid):
+            if _timeline.get_turns(gid) or _timeline.get_pending(gid):
                 _scheduler.trigger(gid)
 
 

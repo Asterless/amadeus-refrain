@@ -86,41 +86,58 @@ async def test_bot_messages_classified_as_assistant(timeline: GroupTimeline, mon
         bot_self_id=bot_id,
     )
 
-    msgs = timeline.get_messages("100")
-    assert len(msgs) == 3
-    assert msgs[0]["role"] == "user"
-    assert msgs[1]["role"] == "assistant"
-    assert msgs[1]["content"] == "hi Alice!"
-    assert msgs[2]["role"] == "user"
+    # After loading history: 2 user msgs → pending (no assistant flush between them),
+    # but bot msg triggers assistant add which flushes pending before it.
+    # Sequence: user("hello") → pending, assistant("hi Alice!") → flushes pending + appends,
+    # user("how are you?") → pending.
+    turns = timeline.get_turns("100")
+    pending = timeline.get_pending("100")
+    assert len(turns) == 2  # 1 merged user turn + 1 assistant turn
+    assert turns[0]["role"] == "user"
+    assert turns[1]["role"] == "assistant"
+    assert turns[1]["content"] == "hi Alice!"
+    assert len(pending) == 1
+    assert pending[0]["role"] == "user"
 
 
-async def test_bot_messages_produce_valid_anthropic_format(timeline: GroupTimeline) -> None:
-    """Timeline with bot messages should produce valid alternating-role Anthropic messages."""
+async def test_bot_messages_produce_valid_turns(timeline: GroupTimeline) -> None:
+    """Timeline with bot messages should produce valid alternating-role turns."""
     timeline.add("100", role="user", speaker="Alice(999)", content="hello")
     timeline.add("100", role="assistant", content="hi!")
     timeline.add("100", role="user", speaker="Alice(999)", content="how are you?")
 
-    result = timeline.to_anthropic_messages("100")
-    assert len(result) == 3
-    assert result[0]["role"] == "user"
-    assert result[1]["role"] == "assistant"
-    assert result[1]["content"] == "hi!"
-    assert result[2]["role"] == "user"
+    turns = timeline.get_turns("100")
+    pending = timeline.get_pending("100")
+    assert len(turns) == 2  # user + assistant
+    assert turns[0]["role"] == "user"
+    assert turns[1]["role"] == "assistant"
+    assert turns[1]["content"] == "hi!"
+    assert len(pending) == 1
+    assert pending[0]["role"] == "user"
 
 
-async def test_consecutive_assistant_messages_merged(timeline: GroupTimeline) -> None:
-    """Consecutive assistant messages (from history reload) should be merged."""
+async def test_consecutive_assistant_turns_preserved(timeline: GroupTimeline) -> None:
+    """Consecutive assistant messages (from history reload) are stored as separate turns."""
     timeline.add("100", role="user", speaker="Alice(999)", content="hello")
     timeline.add("100", role="assistant", content="hi!")
     timeline.add("100", role="assistant", content="how can I help?")
     timeline.add("100", role="user", speaker="Alice(999)", content="thanks")
 
-    result = timeline.to_anthropic_messages("100")
-    assert len(result) == 3
-    assert result[0]["role"] == "user"
-    assert result[1]["role"] == "assistant"
-    assert result[1]["content"] == "hi!\nhow can I help?"
-    assert result[2]["role"] == "user"
+    turns = timeline.get_turns("100")
+    pending = timeline.get_pending("100")
+    # Each assistant add flushes pending, so:
+    # add(user) → pending=[user]
+    # add(assistant "hi!") → flush: turns=[user, asst("hi!")], pending=[]
+    # add(assistant "how can I help?") → no pending to flush, turns=[user, asst, asst]
+    # add(user "thanks") → pending=[user("thanks")]
+    assert len(turns) == 3
+    assert turns[0]["role"] == "user"
+    assert turns[1]["role"] == "assistant"
+    assert turns[1]["content"] == "hi!"
+    assert turns[2]["role"] == "assistant"
+    assert turns[2]["content"] == "how can I help?"
+    assert len(pending) == 1
+    assert pending[0]["content"] == "thanks"
 
 
 async def test_no_bot_self_id_all_user(timeline: GroupTimeline, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -155,7 +172,9 @@ async def test_no_bot_self_id_all_user(timeline: GroupTimeline, monkeypatch: pyt
         bot_self_id="",  # no bot ID → all treated as user
     )
 
-    msgs = timeline.get_messages("100")
-    assert len(msgs) == 3
-    # Without bot_self_id, bot's message is wrongly classified as user
-    assert all(m["role"] == "user" for m in msgs)
+    # Without bot_self_id, all messages are user role → all in pending (no assistant flush)
+    turns = timeline.get_turns("100")
+    pending = timeline.get_pending("100")
+    assert len(turns) == 0  # no assistant → nothing flushed
+    assert len(pending) == 3
+    assert all(m["role"] == "user" for m in pending)

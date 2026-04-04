@@ -422,7 +422,7 @@ class LLMClient:
     # ------------------------------------------------------------------
 
     def _build_group_messages(self, group_id: str) -> list[dict[str, Any]]:
-        """Build message list for group chat: optional summary + timeline + cache breakpoint."""
+        """Build message list for group chat: optional summary + turns + pending + cache breakpoint."""
         assert self._timeline is not None
         messages: list[dict[str, Any]] = []
 
@@ -435,9 +435,14 @@ class LLMClient:
             })
             messages.append({"role": "assistant", "content": "好的，我已了解之前的对话内容。"})
 
-        # Timeline messages
-        history = self._timeline.to_anthropic_messages(group_id)
-        messages.extend(history)
+        # Turns — finalized, byte-identical to previous API calls
+        messages.extend(self._timeline.get_turns(group_id))
+
+        # Pending — temporary merge as tail user message
+        pending = self._timeline.get_pending(group_id)
+        if pending:
+            from src.memory.group_timeline import _merge_user_contents
+            messages.append({"role": "user", "content": _merge_user_contents(pending)})
 
         # Place cache breakpoint at the position recorded by the previous API call
         cached_idx = self._timeline.get_cached_msg_index(group_id)
@@ -451,7 +456,7 @@ class LLMClient:
                 content[-1] = {**content[-1], "cache_control": {"type": "ephemeral"}}
                 messages[cached_idx] = {"role": target["role"], "content": content}
 
-        # Store second-to-last for next call (last may be merged with new user msg)
+        # Store second-to-last for next call (last may grow with new pending)
         if len(messages) >= 2:
             self._timeline.set_cached_msg_index(group_id, len(messages) - 2)
 
@@ -868,45 +873,46 @@ class LLMClient:
         """Compress first half of group timeline into summary and extract memos."""
         if self._group_compact_failures >= self._max_compact_failures:
             assert self._timeline is not None
-            messages = self._timeline.get_messages(group_id)
-            drop = max(2, int(len(messages) * self._compress_ratio))
+            turns = self._timeline.get_turns(group_id)
+            drop = max(2, int(len(turns) * self._compress_ratio))
             self._timeline.drop_oldest(group_id, drop)
-            logger.warning("compact circuit breaker active, dropped {} msgs | group={}", drop, group_id)
+            logger.warning("compact circuit breaker active, dropped {} turns | group={}", drop, group_id)
             return
 
         try:
             assert self._timeline is not None
-            messages = self._timeline.get_messages(group_id)
-            if len(messages) < 4:
+            turns = self._timeline.get_turns(group_id)
+            if len(turns) < 4:
                 return
 
             old_summary = self._timeline.get_summary(group_id)
-            split = max(2, int(len(messages) * self._compress_ratio))
+            split = max(2, int(len(turns) * self._compress_ratio))
 
             # Assemble content for compression
+            # Note: turns don't carry speaker info (merged into content at flush time).
+            # Task 6 will rewrite this to query SQLite for raw messages with speaker info.
             lines: list[str] = []
             if old_summary:
                 lines.append(f"«之前的对话摘要»\n{old_summary}\n")
-            for msg in messages[:split]:
-                if msg["role"] == "assistant":
-                    lines.append(f"{identity.name}: {_content_text(msg['content'])}")
-                elif msg["speaker"]:
-                    lines.append(f"{msg['speaker']}: {_content_text(msg['content'])}")
+            for turn in turns[:split]:
+                if turn["role"] == "assistant":
+                    lines.append(f"{identity.name}: {_content_text(turn['content'])}")
                 else:
-                    lines.append(f"用户: {_content_text(msg['content'])}")
+                    lines.append(f"{_content_text(turn['content'])}")
             conversation_text = "\n".join(lines)
 
-            # Collect user IDs seen in the messages being compacted
+            # Collect user IDs from turn content (speaker info is embedded in merged content)
             seen_user_ids: list[str] = []
             if self._memo_store:
                 seen: set[str] = set()
-                for msg in messages[:split]:
-                    speaker = msg.get("speaker") or ""
-                    if speaker:
-                        m = re.search(r"\((\d+)\)$", speaker)
-                        if m and m.group(1) not in seen:
-                            seen.add(m.group(1))
-                            seen_user_ids.append(m.group(1))
+                for turn in turns[:split]:
+                    if turn["role"] == "user":
+                        text = _content_text(turn["content"])
+                        for m in re.finditer(r"\((\d+)\)", text):
+                            uid = m.group(1)
+                            if uid not in seen:
+                                seen.add(uid)
+                                seen_user_ids.append(uid)
 
             system = [{"type": "text", "text": (
                 "你是一个对话分析助手。请完成两个任务：\n"
@@ -929,7 +935,7 @@ class LLMClient:
             )}]
             compress_messages: list[dict[str, Any]] = [{"role": "user", "content": conversation_text}]
 
-            logger.info("compact_group | group={} split={}/{}", group_id, split, len(messages))
+            logger.info("compact_group | group={} split={}/{}", group_id, split, len(turns))
             source = f"compact:group:{group_id}"
             t_compact = time.monotonic()
             new_summary, memo_writes = await self._compact_with_tools(
@@ -940,8 +946,8 @@ class LLMClient:
             if new_summary:
                 self._timeline.compact(group_id, split, new_summary)
                 logger.info(
-                    "compact_group done | group={} messages={}->{} summary_len={} memo_writes={} elapsed={:.1f}s",
-                    group_id, len(messages), len(messages) - split,
+                    "compact_group done | group={} turns={}->{} summary_len={} memo_writes={} elapsed={:.1f}s",
+                    group_id, len(turns), len(turns) - split,
                     len(new_summary), memo_writes, compact_elapsed,
                 )
             else:

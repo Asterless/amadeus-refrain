@@ -374,15 +374,15 @@ class TestMessageLogIntegration:
             row = dict(await cursor.fetchone())  # type: ignore[arg-type]
 
         # content_text has only the text portions
-        assert row["content_text"] == "look at this"
+        assert row["content_text"] == "look at this"  # type: ignore[index]
 
         # content_json has the full block array including image_ref
-        parsed = json.loads(row["content_json"])
+        parsed = json.loads(row["content_json"])  # type: ignore[index]
         assert len(parsed) == 2
         assert parsed[0]["type"] == "text"
         assert parsed[1]["type"] == "image_ref"
         assert parsed[1]["path"] == "storage/img/abc.jpg"
 
-        assert row["message_id"] == 42
+        assert row["message_id"] == 42  # type: ignore[index]
 
         await ml.close()
