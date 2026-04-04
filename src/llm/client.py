@@ -20,6 +20,7 @@ from src.llm.usage import UsageTracker
 from src.memory.group_timeline import GroupTimeline
 from src.memory.image_cache import ImageCache
 from src.memory.memo_store import MemoStore
+from src.memory.message_log import MessageLog
 from src.memory.short_term import ChatMessage, ShortTermMemory
 from src.memory.types import Content
 from src.tools.context import ToolContext
@@ -342,6 +343,7 @@ class LLMClient:
         compress_ratio: float = 0.5,
         max_compact_failures: int = 3,
         group_timeline: GroupTimeline | None = None,
+        message_log: MessageLog | None = None,
         memo_store: MemoStore | None = None,
         bot_self_id: str = "",
         on_compact: Callable[[], None] | None = None,
@@ -368,6 +370,7 @@ class LLMClient:
         self._private_compact_failures: int = 0
         self._group_compact_failures: int = 0
         self._timeline = group_timeline
+        self._message_log = message_log
         self._memo_store = memo_store
         self._bot_self_id = bot_self_id
         self._on_compact = on_compact
@@ -888,31 +891,43 @@ class LLMClient:
             old_summary = self._timeline.get_summary(group_id)
             split = max(2, int(len(turns) * self._compress_ratio))
 
-            # Assemble content for compression
-            # Note: turns don't carry speaker info (merged into content at flush time).
-            # Task 6 will rewrite this to query SQLite for raw messages with speaker info.
+            # Assemble content for compression with speaker info
             lines: list[str] = []
+            seen_user_ids: list[str] = []
+            seen: set[str] = set()
+
             if old_summary:
                 lines.append(f"«之前的对话摘要»\n{old_summary}\n")
-            for turn in turns[:split]:
-                if turn["role"] == "assistant":
-                    lines.append(f"{identity.name}: {_content_text(turn['content'])}")
-                else:
-                    lines.append(f"{_content_text(turn['content'])}")
-            conversation_text = "\n".join(lines)
 
-            # Collect user IDs from turn content (speaker info is embedded in merged content)
-            seen_user_ids: list[str] = []
-            if self._memo_store:
-                seen: set[str] = set()
+            if self._message_log:
+                # Query raw messages up to the time of the last turn being compacted
+                cutoff = self._timeline.get_turn_time(group_id, split - 1)
+                rows = await self._message_log.query_for_compact(group_id, before=cutoff)
+                for row in rows:
+                    speaker = row.get("speaker") or ""
+                    text = row.get("content_text") or ""
+                    if row["role"] == "assistant":
+                        lines.append(f"{identity.name}: {text}")
+                    elif speaker:
+                        lines.append(f"{speaker}: {text}")
+                    else:
+                        lines.append(f"用户: {text}")
+                    # Extract QQ IDs for memo targeting
+                    if speaker and self._memo_store:
+                        m = re.search(r"\((\d+)\)$", speaker)
+                        if m and m.group(1) not in seen:
+                            seen.add(m.group(1))
+                            seen_user_ids.append(m.group(1))
+            else:
+                # Fallback: reconstruct from turns content (no speaker info)
                 for turn in turns[:split]:
-                    if turn["role"] == "user":
-                        text = _content_text(turn["content"])
-                        for m in re.finditer(r"\((\d+)\)", text):
-                            uid = m.group(1)
-                            if uid not in seen:
-                                seen.add(uid)
-                                seen_user_ids.append(uid)
+                    text = _content_text(turn.get("content", ""))
+                    if turn["role"] == "assistant":
+                        lines.append(f"{identity.name}: {text}")
+                    else:
+                        lines.append(text)
+
+            conversation_text = "\n".join(lines)
 
             system = [{"type": "text", "text": (
                 "你是一个对话分析助手。请完成两个任务：\n"
