@@ -1,10 +1,17 @@
 """Group chat unified timeline: append-only turns + pending buffer model."""
 
+from __future__ import annotations
+
+import asyncio
+import json
 import time
 from collections.abc import Iterator, Sequence
-from typing import Any, Literal, NotRequired, TypedDict, overload
+from typing import TYPE_CHECKING, Any, Literal, NotRequired, TypedDict, overload
 
 from src.memory.types import Content, ContentBlock, TextBlock
+
+if TYPE_CHECKING:
+    from src.memory.message_log import MessageLog
 
 _MAX_GROUPS = 200
 
@@ -160,8 +167,9 @@ class _GroupState:
 class GroupTimeline:
     """Group chat unified timeline with append-only turns and pending buffer."""
 
-    def __init__(self) -> None:
+    def __init__(self, message_log: MessageLog | None = None) -> None:
         self._store: dict[str, _GroupState] = {}
+        self._message_log = message_log
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -174,6 +182,22 @@ class GroupTimeline:
                 del self._store[oldest]
             self._store[group_id] = _GroupState()
         return self._store[group_id]
+
+    # ------------------------------------------------------------------
+    # Content extraction helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _content_to_text(content: Content) -> str:
+        """Extract plain text from Content for SQLite content_text column."""
+        if isinstance(content, str):
+            return content
+        return " ".join(b["text"] for b in content if b["type"] == "text")
+
+    @staticmethod
+    def _content_to_json(content: Content) -> str:
+        """Serialize Content to JSON for SQLite content_json column."""
+        return json.dumps(content, ensure_ascii=False)
 
     # ------------------------------------------------------------------
     # Message ingestion
@@ -213,6 +237,17 @@ class GroupTimeline:
             # Append assistant turn
             state.turns.append({"role": "assistant", "content": content})
             state.turn_times.append(now)
+
+        # Fire-and-forget SQLite write
+        if self._message_log:
+            asyncio.create_task(self._message_log.record(  # noqa: RUF006
+                group_id=group_id,
+                role=role,
+                speaker=speaker,
+                content_text=self._content_to_text(content),
+                content_json=self._content_to_json(content),
+                message_id=message_id,
+            ))
 
     # ------------------------------------------------------------------
     # Read accessors

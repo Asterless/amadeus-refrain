@@ -1,8 +1,13 @@
 """GroupTimeline unit tests — _TurnLog + turns/pending model."""
 
+import asyncio
+import json
+
+import aiosqlite
 import pytest
 
 from src.memory.group_timeline import GroupTimeline, _TurnLog
+from src.memory.message_log import MessageLog
 
 # ===========================================================================
 # TestTurnLog
@@ -292,3 +297,92 @@ class TestGroupTimelineLifecycle:
         tl.set_cached_msg_index("g1", 3)
         tl.compact("g1", split=2, new_summary="summary")
         assert tl.get_cached_msg_index("g1") == 0
+
+
+# ===========================================================================
+# TestMessageLogIntegration
+# ===========================================================================
+
+
+class TestMessageLogIntegration:
+    """Verify GroupTimeline.add() fires-and-forgets SQLite writes via MessageLog."""
+
+    @pytest.mark.asyncio()
+    async def test_add_writes_to_message_log(self, tmp_path: object) -> None:
+        db_path = f"{tmp_path}/messages.db"
+        ml = MessageLog(db_path=db_path)
+        await ml.init()
+
+        tl = GroupTimeline(message_log=ml)
+        tl.add("g1", role="user", content="hello world", speaker="Alice(111)")
+        tl.add("g1", role="assistant", content="hi there")
+
+        # Let fire-and-forget tasks complete
+        await asyncio.sleep(0.1)
+
+        async with aiosqlite.connect(db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT group_id, role, speaker, content_text, content_json, message_id "
+                "FROM group_messages ORDER BY id"
+            )
+            rows = [dict(r) for r in await cursor.fetchall()]
+
+        assert len(rows) == 2
+
+        # User message
+        assert rows[0]["group_id"] == "g1"
+        assert rows[0]["role"] == "user"
+        assert rows[0]["speaker"] == "Alice(111)"
+        assert rows[0]["content_text"] == "hello world"
+        assert json.loads(rows[0]["content_json"]) == "hello world"
+        assert rows[0]["message_id"] is None
+
+        # Assistant message
+        assert rows[1]["role"] == "assistant"
+        assert rows[1]["speaker"] is None
+        assert rows[1]["content_text"] == "hi there"
+
+        await ml.close()
+
+    @pytest.mark.asyncio()
+    async def test_add_multimodal_writes_both_columns(self, tmp_path: object) -> None:
+        db_path = f"{tmp_path}/messages.db"
+        ml = MessageLog(db_path=db_path)
+        await ml.init()
+
+        tl = GroupTimeline(message_log=ml)
+        multimodal_content = [
+            {"type": "text", "text": "look at this"},
+            {"type": "image_ref", "path": "storage/img/abc.jpg", "media_type": "image/jpeg"},
+        ]
+        tl.add(
+            "g2",
+            role="user",
+            content=multimodal_content,  # type: ignore[arg-type]
+            speaker="Bob(222)",
+            message_id=42,
+        )
+
+        await asyncio.sleep(0.1)
+
+        async with aiosqlite.connect(db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT content_text, content_json, message_id FROM group_messages"
+            )
+            row = dict(await cursor.fetchone())  # type: ignore[arg-type]
+
+        # content_text has only the text portions
+        assert row["content_text"] == "look at this"
+
+        # content_json has the full block array including image_ref
+        parsed = json.loads(row["content_json"])
+        assert len(parsed) == 2
+        assert parsed[0]["type"] == "text"
+        assert parsed[1]["type"] == "image_ref"
+        assert parsed[1]["path"] == "storage/img/abc.jpg"
+
+        assert row["message_id"] == 42
+
+        await ml.close()
