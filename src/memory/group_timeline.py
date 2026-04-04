@@ -1,6 +1,8 @@
-"""群聊统一时间线：合并 GroupContext 与群组的 ShortTermMemory。"""
+"""Group chat unified timeline: append-only turns + pending buffer model."""
 
-from typing import Any, Literal, NotRequired, TypedDict
+import time
+from collections.abc import Iterator, Sequence
+from typing import Any, Literal, NotRequired, TypedDict, overload
 
 from src.memory.types import Content, ContentBlock, TextBlock
 
@@ -12,6 +14,11 @@ class TimelineMessage(TypedDict):
     speaker: str | None  # user → "昵称(QQ号)", assistant → None
     content: Content
     message_id: NotRequired[int | None]  # QQ message_id for reply references
+
+
+# ------------------------------------------------------------------
+# Module-level merge helpers (used by other modules)
+# ------------------------------------------------------------------
 
 
 def _merge_user_contents(batch: list[TimelineMessage]) -> Content:
@@ -74,24 +81,90 @@ def _merge_assistant_contents(parts: list[Content]) -> Content:
     return merged
 
 
-class _GroupState:
-    __slots__ = ("last_cached_msg_index", "last_input_tokens", "messages", "summary")
+# ------------------------------------------------------------------
+# _TurnLog — append-only Sequence[dict[str, Any]]
+# ------------------------------------------------------------------
+
+
+class _TurnLog(Sequence[dict[str, Any]]):
+    """Append-only container for finalized Anthropic message turns."""
+
+    __slots__ = ("_data",)
 
     def __init__(self) -> None:
-        self.messages: list[TimelineMessage] = []
+        self._data: list[dict[str, Any]] = []
+
+    # -- Sequence protocol --
+
+    @overload
+    def __getitem__(self, index: int) -> dict[str, Any]: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> list[dict[str, Any]]: ...
+
+    def __getitem__(self, index: int | slice) -> dict[str, Any] | list[dict[str, Any]]:
+        return self._data[index]
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+    def __bool__(self) -> bool:
+        return bool(self._data)
+
+    def __iter__(self) -> Iterator[dict[str, Any]]:
+        return iter(self._data)
+
+    # -- Mutators (append-only, no arbitrary mutation) --
+
+    def append(self, turn: dict[str, Any]) -> None:
+        self._data.append(turn)
+
+    def compact_truncate(self, count: int) -> None:
+        """Remove the first `count` turns."""
+        self._data = self._data[count:]
+
+    def reset(self) -> None:
+        """Clear all turns."""
+        self._data.clear()
+
+
+# ------------------------------------------------------------------
+# _GroupState
+# ------------------------------------------------------------------
+
+
+class _GroupState:
+    __slots__ = (
+        "last_cached_msg_index",
+        "last_input_tokens",
+        "pending",
+        "summary",
+        "turn_times",
+        "turns",
+    )
+
+    def __init__(self) -> None:
+        self.turns = _TurnLog()
+        self.turn_times: list[float] = []
+        self.pending: list[TimelineMessage] = []
         self.summary: str = ""
         self.last_input_tokens: int = 0
         self.last_cached_msg_index: int = 0
 
 
+# ------------------------------------------------------------------
+# GroupTimeline — public API
+# ------------------------------------------------------------------
+
+
 class GroupTimeline:
-    """群聊统一时间线，兼具上下文记录与 compact 能力。"""
+    """Group chat unified timeline with append-only turns and pending buffer."""
 
     def __init__(self) -> None:
         self._store: dict[str, _GroupState] = {}
 
     # ------------------------------------------------------------------
-    # 内部辅助
+    # Internal helpers
     # ------------------------------------------------------------------
 
     def _get_or_create(self, group_id: str) -> _GroupState:
@@ -103,7 +176,7 @@ class GroupTimeline:
         return self._store[group_id]
 
     # ------------------------------------------------------------------
-    # 消息管理
+    # Message ingestion
     # ------------------------------------------------------------------
 
     def add(
@@ -115,51 +188,132 @@ class GroupTimeline:
         speaker: str | None = None,
         message_id: int | None = None,
     ) -> None:
-        """追加一条消息；由 compact 控制大小，不做硬截断。"""
-        state = self._get_or_create(group_id)
-        msg = TimelineMessage(role=role, speaker=speaker, content=content)
-        if message_id is not None:
-            msg["message_id"] = message_id
-        state.messages.append(msg)
+        """Add a message to the timeline.
 
-    def get_messages(self, group_id: str) -> list[TimelineMessage]:
-        """返回原始消息列表的副本。"""
+        role="user"  → appends to pending buffer.
+        role="assistant" → flushes pending into a merged user turn,
+                           then appends both user and assistant turns to turns.
+        """
+        state = self._get_or_create(group_id)
+
+        if role == "user":
+            msg = TimelineMessage(role="user", speaker=speaker, content=content)
+            if message_id is not None:
+                msg["message_id"] = message_id
+            state.pending.append(msg)
+        else:
+            # Flush pending user messages into a merged user turn
+            now = time.time()
+            if state.pending:
+                user_content = _merge_user_contents(state.pending)
+                state.turns.append({"role": "user", "content": user_content})
+                state.turn_times.append(now)
+                state.pending.clear()
+
+            # Append assistant turn
+            state.turns.append({"role": "assistant", "content": content})
+            state.turn_times.append(now)
+
+    # ------------------------------------------------------------------
+    # Read accessors
+    # ------------------------------------------------------------------
+
+    def get_turns(self, group_id: str) -> Sequence[dict[str, Any]]:
+        """Return read-only view of finalized turns."""
+        if group_id not in self._store:
+            return _TurnLog()
+        return self._store[group_id].turns
+
+    def get_pending(self, group_id: str) -> list[TimelineMessage]:
+        """Return a copy of the pending user message buffer."""
         if group_id not in self._store:
             return []
-        return list(self._store[group_id].messages)
+        return list(self._store[group_id].pending)
+
+    def get_turn_time(self, group_id: str, index: int) -> float:
+        """Return the timestamp of the turn at the given index."""
+        if group_id not in self._store:
+            return 0.0
+        state = self._store[group_id]
+        if 0 <= index < len(state.turn_times):
+            return state.turn_times[index]
+        return 0.0
 
     # ------------------------------------------------------------------
-    # Anthropic 消息格式转换
+    # Backward-compatible accessors (used by client.py — will be removed)
     # ------------------------------------------------------------------
+
+    def get_messages(self, group_id: str) -> list[TimelineMessage]:
+        """Return raw messages list (DEPRECATED — use get_turns)."""
+        if group_id not in self._store:
+            return []
+        state = self._store[group_id]
+        # Reconstruct from turns + pending for backward compat
+        result: list[TimelineMessage] = []
+        for turn in state.turns:
+            result.append(
+                TimelineMessage(
+                    role=turn["role"],
+                    speaker=None,
+                    content=turn["content"],
+                )
+            )
+        result.extend(state.pending)
+        return result
 
     def to_anthropic_messages(self, group_id: str) -> list[dict[str, Any]]:
-        """将时间线转为 Anthropic messages 格式。"""
-        messages = self.get_messages(group_id)
-        if not messages:
+        """Convert timeline to Anthropic messages format (DEPRECATED)."""
+        if group_id not in self._store:
             return []
+        state = self._store[group_id]
 
+        # Build raw turn list (turns + any pending user messages)
+        raw: list[dict[str, Any]] = list(state.turns)
+        if state.pending:
+            user_content = _merge_user_contents(state.pending)
+            raw.append({"role": "user", "content": user_content})
+
+        # Merge consecutive same-role turns (e.g. history reload may produce
+        # consecutive assistant turns)
+        if not raw:
+            return []
         result: list[dict[str, Any]] = []
         i = 0
-        while i < len(messages):
-            msg = messages[i]
-            if msg["role"] == "assistant":
-                # Merge consecutive assistant messages (history reload may produce these)
+        while i < len(raw):
+            role = raw[i]["role"]
+            if role == "assistant":
                 parts: list[Content] = []
-                while i < len(messages) and messages[i]["role"] == "assistant":
-                    parts.append(messages[i]["content"])
+                while i < len(raw) and raw[i]["role"] == "assistant":
+                    parts.append(raw[i]["content"])
                     i += 1
                 result.append({"role": "assistant", "content": _merge_assistant_contents(parts)})
             else:
-                user_batch: list[TimelineMessage] = []
-                while i < len(messages) and messages[i]["role"] == "user":
-                    user_batch.append(messages[i])
+                # User turns are already merged at flush time; just collect consecutive
+                contents: list[Content] = []
+                while i < len(raw) and raw[i]["role"] == "user":
+                    contents.append(raw[i]["content"])
                     i += 1
-                result.append({"role": "user", "content": _merge_user_contents(user_batch)})
-
+                if len(contents) == 1:
+                    result.append({"role": "user", "content": contents[0]})
+                else:
+                    # Merge multiple consecutive user turns (shouldn't normally happen
+                    # but handle gracefully)
+                    merged: list[ContentBlock] = []
+                    for c in contents:
+                        if isinstance(c, str):
+                            merged.append(TextBlock(type="text", text=c))
+                        else:
+                            merged.extend(c)
+                    if len(merged) == 1 and merged[0]["type"] == "text":
+                        result.append({"role": "user", "content": merged[0].get("text", "")})
+                    elif merged:
+                        result.append({"role": "user", "content": merged})
+                    else:
+                        result.append({"role": "user", "content": ""})
         return result
 
     # ------------------------------------------------------------------
-    # 摘要 & Token 管理
+    # Summary & token management
     # ------------------------------------------------------------------
 
     def get_summary(self, group_id: str) -> str:
@@ -189,22 +343,37 @@ class GroupTimeline:
         state.last_cached_msg_index = index
 
     def needs_compact(self, group_id: str, max_tokens: int, ratio: float) -> bool:
-        """判断是否需要 compact：当前 input tokens 超过阈值。"""
+        """Check if compaction is needed: input tokens exceed threshold."""
         return self.get_input_tokens(group_id) > max_tokens * ratio
 
+    # ------------------------------------------------------------------
+    # Compaction & cleanup
+    # ------------------------------------------------------------------
+
     def compact(self, group_id: str, split: int, new_summary: str) -> None:
-        """裁剪前 split 条消息，更新摘要，重置 token 计数。"""
+        """Truncate the first `split` turns and update summary."""
         if group_id not in self._store:
             return
         state = self._store[group_id]
-        state.messages = state.messages[split:]
+        state.turns.compact_truncate(split)
+        state.turn_times = state.turn_times[split:]
         state.summary = new_summary
         state.last_input_tokens = 0
         state.last_cached_msg_index = 0
 
     def drop_oldest(self, group_id: str, count: int) -> None:
-        """Drop the oldest `count` messages. For micro compact."""
+        """Drop the oldest `count` turns. For micro compact."""
         state = self._store.get(group_id)
         if state is None:
             return
-        state.messages = state.messages[count:]
+        state.turns.compact_truncate(count)
+        state.turn_times = state.turn_times[count:]
+
+    def clear(self, group_id: str) -> None:
+        """Clear turns + pending + turn_times, but preserve summary."""
+        if group_id not in self._store:
+            return
+        state = self._store[group_id]
+        state.turns.reset()
+        state.turn_times.clear()
+        state.pending.clear()

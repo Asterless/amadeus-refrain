@@ -124,8 +124,11 @@ async def test_group_compact_triggers_at_ratio(prompt, short_term, tools, timeli
             )
 
         assert result is not None
-        # After compact, 4 messages remain (8 * 0.5), plus 1 assistant reply added by chat()
-        assert len(timeline.get_messages(gid)) == 5  # 8 * 0.5 = 4 remaining + 1 assistant reply
+        # After add(assistant), pending is flushed into turns (1 user + 1 assistant).
+        # Compact ran on (empty) turns before the flush, so turns are just the flushed pair.
+        turns = timeline.get_turns(gid)
+        assert len(turns) == 2  # 1 merged user turn + 1 assistant reply
+        assert turns[-1]["content"] == "reply"
         assert timeline.get_summary(gid) == "compressed"
 
 
@@ -146,7 +149,9 @@ async def test_group_no_compact_below_ratio(prompt, short_term, tools, timeline,
                 session_id="group_12345", user_id="111",
                 user_content="hello", identity=_IDENTITY, group_id=gid,
             )
-        assert len(timeline.get_messages(gid)) == 9  # 8 original + 1 assistant reply added by chat()
+        # After add(assistant), all 8 pending user msgs flush into 1 user turn + 1 assistant
+        turns = timeline.get_turns(gid)
+        assert len(turns) == 2  # 1 merged user turn + 1 assistant reply
 
 
 # ---------------------------------------------------------------------------
