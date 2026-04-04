@@ -25,7 +25,7 @@ class SaveStickerTool(Tool):
     def description(self) -> str:
         return (
             "收录一张对话中的图片到你的表情包库。"
-            "image_tag 使用图片旁边的 <<img:N>> 标签。"
+            "image_tag 使用图片旁边的 «img:N» 标签。"
             "只在管理员要求时才调用，必须将管理员QQ号填入 requested_by。"
             "只在你完全理解图片含义、清楚使用场景、且符合自己性格时才调用。"
         )

@@ -267,7 +267,7 @@ async def _render_message(
     images: list[ImageRefBlock] = []
     image_count = 0
 
-    # 引用回复 → <<回复 昵称(QQ号): 原文摘要>>
+    # 引用回复 → «回复 昵称(QQ号): 原文摘要»
     if reply is not None:
         sender = getattr(reply, "sender", None)
         reply_msg = getattr(reply, "message", None)
@@ -280,7 +280,7 @@ async def _render_message(
             if len(original) > cap:
                 original = original[:cap] + "…"
             label = "回复 我" if is_reply_to_bot else f"回复 {nick}({uid})"
-            text_parts.append(f"<<{label}: {original}>> ")
+            text_parts.append(f"«{label}: {original}» ")
 
     image_tasks: list[asyncio.Task[ImageRefBlock | None]] = []
 
@@ -295,10 +295,10 @@ async def _render_message(
             try:
                 text_parts.append(face_to_text(int(face_id)))
             except (ValueError, TypeError):
-                text_parts.append("<<表情>>")
+                text_parts.append("«表情»")
         elif seg.type == "image" and _vision_enabled and session is not None:
             if image_count >= _max_images_per_message:
-                text_parts.append("<<图片>>")
+                text_parts.append("«图片»")
                 continue
             url = seg.data.get("url", "")
             file_id = seg.data.get("file", "")
@@ -309,10 +309,10 @@ async def _render_message(
                 )
                 image_count += 1
             else:
-                text_parts.append("<<图片>>")
+                text_parts.append("«图片»")
         elif seg.type == "image":
             summary = seg.data.get("summary", "").strip("[]") or "图片"
-            text_parts.append(f"<<{summary}>>")
+            text_parts.append(f"«{summary}»")
 
     # Resolve all image downloads concurrently
     if image_tasks:
@@ -320,7 +320,7 @@ async def _render_message(
         results = await asyncio.gather(*image_tasks, return_exceptions=True)
         for r in results:
             if isinstance(r, BaseException) or r is None:
-                text_parts.append("<<图片>>")
+                text_parts.append("«图片»")
             else:
                 images.append(r)
         elapsed_ms = (time.perf_counter() - t0) * 1000

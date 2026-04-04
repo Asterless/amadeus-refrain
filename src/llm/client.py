@@ -139,14 +139,13 @@ async def _resolve_image_refs(
                 tag_counter += 1
                 tag = f"img:{tag_counter}"
                 image_tag_map[tag] = orig_block["path"]
-                new_content.append({"type": "text", "text": f"<<{tag}>>"})
-
+                new_content.append({"type": "text", "text": f"«{tag}»"})
                 if cache_ctrl:
                     resolved = {**resolved, "cache_control": cache_ctrl}
                 new_content.append(resolved)
                 resolved_count += 1
             else:
-                fallback: dict[str, Any] = {"type": "text", "text": "<<图片已过期>>"}
+                fallback: dict[str, Any] = {"type": "text", "text": "«图片已过期»"}
                 if cache_ctrl:
                     fallback["cache_control"] = cache_ctrl
                 new_content.append(fallback)
@@ -432,7 +431,7 @@ class LLMClient:
         if summary:
             messages.append({
                 "role": "user",
-                "content": [_cached_text(f"<<对话摘要>>\n{summary}")],
+                "content": [_cached_text(f"«对话摘要»\n{summary}")],
             })
             messages.append({"role": "assistant", "content": "好的，我已了解之前的对话内容。"})
 
@@ -467,7 +466,7 @@ class LLMClient:
         if summary:
             messages.append({
                 "role": "user",
-                "content": [_cached_text(f"<<对话摘要>>\n{summary}")],
+                "content": [_cached_text(f"«对话摘要»\n{summary}")],
             })
             messages.append({"role": "assistant", "content": "好的，我已了解之前的对话内容。"})
 
@@ -796,7 +795,7 @@ class LLMClient:
             # Assemble content for compression
             lines: list[str] = []
             if old_summary:
-                lines.append(f"<<之前的对话摘要>>\n{old_summary}\n")
+                lines.append(f"«之前的对话摘要»\n{old_summary}\n")
             for msg in history[:split]:
                 role_label = "用户" if msg["role"] == "user" else "助手"
                 lines.append(f"{role_label}: {_content_text(msg['content'])}")
@@ -881,7 +880,7 @@ class LLMClient:
             # Assemble content for compression
             lines: list[str] = []
             if old_summary:
-                lines.append(f"<<之前的对话摘要>>\n{old_summary}\n")
+                lines.append(f"«之前的对话摘要»\n{old_summary}\n")
             for msg in messages[:split]:
                 if msg["role"] == "assistant":
                     lines.append(f"{identity.name}: {_content_text(msg['content'])}")

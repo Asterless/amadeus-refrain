@@ -27,7 +27,7 @@ def _merge_user_contents(batch: list[TimelineMessage]) -> Content:
         for m in batch:
             assert isinstance(m["content"], str)
             mid = m.get("message_id")
-            tag = f"<<msg:{mid}>> " if mid is not None else ""
+            tag = f"«msg:{mid}» " if mid is not None else ""
             if m["speaker"] is not None:
                 lines.append(f"{tag}{m['speaker']}: {m['content']}")
             else:
@@ -37,7 +37,7 @@ def _merge_user_contents(batch: list[TimelineMessage]) -> Content:
     merged: list[ContentBlock] = []
     for m in batch:
         mid = m.get("message_id")
-        tag = f"<<msg:{mid}>> " if mid is not None else ""
+        tag = f"«msg:{mid}» " if mid is not None else ""
         prefix = f"{tag}{m['speaker']}: " if m["speaker"] is not None else tag
         if isinstance(m["content"], str):
             merged.append(TextBlock(type="text", text=f"{prefix}{m['content']}"))
