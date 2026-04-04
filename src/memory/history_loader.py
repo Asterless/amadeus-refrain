@@ -63,6 +63,7 @@ async def _load_one_group(
 
     t0 = time.perf_counter()
     loaded = 0
+    self_count = 0
 
     for msg in messages:
         sender: dict[str, Any] = msg.get("sender", {})
@@ -76,6 +77,7 @@ async def _load_one_group(
         msg_id = msg.get("message_id")
         if bot_self_id and user_id == bot_self_id:
             timeline.add(group_id, role="assistant", content=content)
+            self_count += 1
         else:
             timeline.add(
                 group_id, role="user", speaker=f"{nickname}({user_id})",
@@ -84,7 +86,10 @@ async def _load_one_group(
         loaded += 1
 
     elapsed_ms = (time.perf_counter() - t0) * 1000
-    logger.info("history loaded | group={} messages={} elapsed={:.0f}ms", group_id, loaded, elapsed_ms)
+    logger.info(
+        "history loaded | group={} messages={} self={} bot_self_id={} elapsed={:.0f}ms",
+        group_id, loaded, self_count, bot_self_id, elapsed_ms,
+    )
 
 
 async def _extract_content(

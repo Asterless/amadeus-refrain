@@ -1,7 +1,10 @@
+from __future__ import annotations
+
 import argparse
 import os
 from pathlib import Path
 
+import loguru
 import nonebot
 from loguru import logger
 from nonebot.adapters.onebot.v11 import Adapter as OneBotV11Adapter
@@ -75,8 +78,8 @@ import nonebot.log as _nlog  # noqa: E402
 _MATCHER_NOISE = ("Event will be handled by", "running complete")
 
 
-def _quiet_filter(record: dict) -> bool:  # type: ignore[type-arg]
-    if not _nlog.default_filter(record):
+def _quiet_filter(record: "loguru.Record") -> bool:
+    if not _nlog.default_filter(record):  # type: ignore[arg-type]
         return False
     name = record.get("name") or ""
     return not (name.startswith("nonebot") and any(s in record["message"] for s in _MATCHER_NOISE))
@@ -84,7 +87,7 @@ def _quiet_filter(record: dict) -> bool:  # type: ignore[type-arg]
 
 if hasattr(_nlog, "logger_id"):
     logger.remove(_nlog.logger_id)
-    _nlog.logger_id = logger.add(
+    _nlog.logger_id = logger.add(  # type: ignore[assignment]
         __import__("sys").stderr,
         level=0,
         diagnose=False,

@@ -53,6 +53,27 @@ def _merge_user_contents(batch: list[TimelineMessage]) -> Content:
     return merged
 
 
+def _merge_assistant_contents(parts: list[Content]) -> Content:
+    """Merge consecutive assistant message contents into one.
+
+    Returns str if all parts are plain text, otherwise list[ContentBlock].
+    """
+    if len(parts) == 1:
+        return parts[0]
+
+    has_blocks = any(isinstance(p, list) for p in parts)
+    if not has_blocks:
+        return "\n".join(p for p in parts if isinstance(p, str))
+
+    merged: list[ContentBlock] = []
+    for p in parts:
+        if isinstance(p, str):
+            merged.append(TextBlock(type="text", text=p))
+        else:
+            merged.extend(p)
+    return merged
+
+
 class _GroupState:
     __slots__ = ("last_cached_msg_index", "last_input_tokens", "messages", "summary")
 
@@ -122,8 +143,12 @@ class GroupTimeline:
         while i < len(messages):
             msg = messages[i]
             if msg["role"] == "assistant":
-                result.append({"role": "assistant", "content": msg["content"]})
-                i += 1
+                # Merge consecutive assistant messages (history reload may produce these)
+                parts: list[Content] = []
+                while i < len(messages) and messages[i]["role"] == "assistant":
+                    parts.append(messages[i]["content"])
+                    i += 1
+                result.append({"role": "assistant", "content": _merge_assistant_contents(parts)})
             else:
                 user_batch: list[TimelineMessage] = []
                 while i < len(messages) and messages[i]["role"] == "user":
