@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import io
 import json
 import re
 import time
@@ -249,7 +250,15 @@ async def _call_api(
     current_tool: dict[str, str] = {}
     usage: dict[str, int] = {}
 
-    async with session.post(f"{base_url}/v1/messages", json=body, headers=headers) as resp:
+    t_ser = time.perf_counter()
+    payload_bytes = json.dumps(body).encode()
+    payload = io.BytesIO(payload_bytes)
+    logger.trace(
+        "api payload serialized | size={}KB elapsed={:.1f}ms",
+        len(payload_bytes) // 1024,
+        (time.perf_counter() - t_ser) * 1000,
+    )
+    async with session.post(f"{base_url}/v1/messages", data=payload, headers=headers) as resp:
         if resp.status == 429:
             body_text = await resp.text()
             raise RateLimitError(f"HTTP 429: {body_text}")
