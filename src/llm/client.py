@@ -258,6 +258,7 @@ async def _call_api(
     text_parts: list[str] = []
     tool_uses: list[_ToolUse] = []
     current_tool: dict[str, str] = {}
+    current_block_type: str = ""
     usage: dict[str, int] = {}
 
     t_ser = time.perf_counter()
@@ -285,11 +286,12 @@ async def _call_api(
                 usage = {k: v for k, v in msg_usage.items() if isinstance(v, int)}
             elif event_type == "content_block_start":
                 block: dict[str, Any] = data.get("content_block", {})
-                if block.get("type") == "tool_use":
+                current_block_type = block.get("type", "")
+                if current_block_type == "tool_use":
                     current_tool = {"id": block["id"], "name": block["name"], "input_json": ""}
             elif event_type == "content_block_delta":
                 delta: dict[str, Any] = data.get("delta", {})
-                if delta.get("type") == "text_delta":
+                if delta.get("type") == "text_delta" and current_block_type != "thinking":
                     text_parts.append(delta["text"])
                 elif delta.get("type") == "input_json_delta":
                     current_tool["input_json"] += delta.get("partial_json", "")
