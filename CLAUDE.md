@@ -45,7 +45,9 @@ Key design choices:
 - **Vision** — images downloaded, downscaled via pyvips, cached to disk, sent as base64 to Anthropic API; configurable per-message limit
 - **Stickers** — persistent library with SHA256 dedup; LLM can save/send stickers; Dream agent curates library
 - **Soul directory** — `soul/identity.md` (persona, `## 插话方式` section for proactive rules), `soul/instruction.md` (behavioral directives)
-- **Memory** — short-term: in-memory deque per session; long-term: `.qmd` files in `storage/memories/` with pending section auto-filled by compaction
+- **Memory** — short-term: in-memory deque per session; long-term: `.md` files in `storage/memories/` with pending section auto-filled by compaction
+- **Group timeline** — append-only turns + pending buffer per group; SQLite message persistence via `MessageLog` for compaction queries
+- **Per-group config** — `group.overrides` maps group IDs to `GroupOverride` (at_only, debounce, batch_size, blocked_users); resolved via `GroupConfig.resolve()`
 - **Usage tracking** — SQLite recording of all LLM calls (tokens, cache hits, latency); alerts admins on low cache hit rate or slow calls
 - **Config**: `BotConfig` (Pydantic) via `config_loader.py` — TOML < env vars < CLI args
 - **Ruff**: `pyproject.toml`, RUF001/RUF002/RUF003 ignored (Chinese full-width chars)

@@ -8,7 +8,7 @@
 - **Segmented responses** — Bot replies can contain `---cut---` separators; each segment is sent as a separate QQ message with a 0.5s delay.
 - **Tool framework** — Tools extend `src/tools/base.py:Tool` ABC (name, description, parameters as JSON Schema, async execute). Registered in `ToolRegistry`, converted to Anthropic format via OpenAI-style intermediate. `ToolContext` carries the Bot instance and event metadata. Tools are executed in parallel within each round.
 - **Soul directory** — `soul/` holds personality & instruction configs. `identity.md` defines a single persona (Markdown: `# Name` heading for the persona name, body for personality, optional `## 插话方式` section for proactive chat rules — exact heading match required). `instruction.md` holds behavioral directives injected into the system prompt.
-- **Memory layers** — Short-term: in-memory deque per session (private chat). Long-term: `.qmd` files per user/group in `storage/memories/` with profile + events sections + `## 待整理` pending section (auto-filled by compact memo extraction, organized by Dream agent). Group timeline: in-memory deque of recent messages per group (`GroupTimeline`), with summary from compaction. Max 200 groups in memory (LRU eviction).
+- **Memory layers** — Short-term: in-memory deque per session (private chat). Long-term: `.md` files per user/group in `storage/memories/` with profile + events sections + `## 待整理` pending section (auto-filled by compact memo extraction, organized by Dream agent). Group timeline: append-only turns + pending buffer per group (`GroupTimeline`), with summary from compaction and SQLite persistence via `MessageLog`. Max 200 groups in memory (LRU eviction).
 - **Session IDs** — `group_{group_id}` for group chats, `private_{user_id}` for DMs.
 - **History bootstrap** — On bot connect, `history_loader.py` pulls recent messages from NapCat HTTP API for all groups, populating the group timeline (with image caching and sticker recognition). After loading, the scheduler fires once per group to catch up on missed messages.
 
@@ -40,7 +40,7 @@ Key config sections:
 | `llm.usage` | `enabled`, `slow_threshold_s` | Usage tracking & slow call alerts |
 | `compact` | `ratio`, `compress_ratio`, `max_failures`, `cache_hit_warn`, `cache_alert_window_m`, `cache_alert_cooldown_m` | Context compaction & cache alerting |
 | `dream` | `enabled`, `interval_hours`, `max_rounds` | Dream agent (periodic memo consolidation) |
-| `group` | `history_load_count`, `allowed_groups`, `debounce_seconds`, `batch_size` | Group chat behavior & scheduler |
+| `group` | `history_load_count`, `allowed_groups`, `debounce_seconds`, `batch_size`, `at_only`, `blocked_users`, `overrides` | Group chat behavior, scheduler & per-group overrides |
 | `napcat` | `api_url` | NapCat HTTP API endpoint |
 | `memo` | `dir`, `user_max_chars`, `group_max_chars`, `index_max_lines`, `history_enabled` | Long-term memo storage |
 | `soul` | `dir` | Soul config directory |
@@ -52,6 +52,17 @@ Key config sections:
 `admins` is a `dict[str, str]` mapping QQ numbers to nicknames. Admins are injected into the system prompt as trusted sources and authorized for group admin tools.
 
 NoneBot itself is configured in `pyproject.toml` under `[tool.nonebot]`.
+
+### Per-Group Config
+
+`group.overrides` maps group IDs to `GroupOverride`, allowing per-group tuning of `at_only`, `debounce_seconds`, `batch_size`, `history_load_count`, and `blocked_users`. Resolved via `GroupConfig.resolve(group_id) -> ResolvedGroupConfig`:
+
+- `blocked_users`: union of global + per-group lists (additive, not override)
+- All other fields: per-group value if set, else global default
+
+### Message Log
+
+`MessageLog` (`src/memory/message_log.py`) persists every raw group message to SQLite (`storage/messages.db`). Writes are fire-and-forget via `asyncio.create_task`. The `group_messages` table stores `group_id`, `role`, `speaker`, `content_text`, `content_json`, `message_id`, `created_at` with an index on `(group_id, created_at)`. Used by `_compact_group` to query raw messages with speaker info for LLM compression.
 
 ## Available Tools
 
@@ -70,6 +81,18 @@ NoneBot itself is configured in `pyproject.toml` under `[tool.nonebot]`.
 | `send_sticker` | `SendStickerTool` | Send sticker as image message (conditional on sticker enabled) |
 | `pass_turn` | — | Skip this turn (injected by LLMClient for all chat calls, not a registered tool) |
 | `append_memo` | — | Append observation to memo pending section (injected during compaction, not a registered tool) |
+
+## Group Timeline
+
+Append-only conversation timeline per group (`src/memory/group_timeline.py`).
+
+- **`_TurnLog`**: immutable `Sequence` of finalized Anthropic messages. Supports append and truncation (for compaction), but not arbitrary mutation.
+- **`pending`**: mutable buffer of raw `TimelineMessage` dicts accumulating the current user turn. Flushed into `_TurnLog` when an assistant reply arrives.
+- **`_GroupState`**: per-group state holding `turns`, `pending`, `turn_times`, `summary`, `last_input_tokens`, `last_cached_msg_index`.
+- **Cache stability**: the turns range is byte-identical between calls; the prompt cache breakpoint is placed at `len(messages) - 2`, so only the newest pending merge invalidates the cache.
+- **SQLite backing**: every `add()` call also records the raw message via `MessageLog.record()` (fire-and-forget), enabling `_compact_group` to query historical messages with speaker info.
+- **Compaction**: `compact(split, new_summary)` truncates turns at a split point (turn count) and stores a new summary. `drop_oldest(count)` is the circuit-breaker fallback.
+- **LRU eviction**: max 200 groups in memory; least-recently-used groups evicted on overflow.
 
 ## Vision System
 

@@ -36,12 +36,13 @@ The bot image uses a two-stage Docker build. `GIT_COMMIT` build arg is baked in 
 ```
 storage/
 ├── usage.db                    # SQLite — LLM usage tracking
+├── messages.db                 # SQLite — raw group message persistence
 ├── logs/
 │   ├── bot_*.log               # Main bot logs (10MB rotation, 30 days retention)
 │   └── dream_*.log             # Dream agent logs (separate sink)
 ├── memories/
-│   ├── users/                  # Per-user .qmd memo files
-│   ├── groups/                 # Per-group .qmd memo files
+│   ├── users/                  # Per-user .md memo files
+│   ├── groups/                 # Per-group .md memo files
 │   └── index.md                # Cross-reference index
 ├── image_cache/
 │   └── {2-char-bucket}/        # Cached images (auto-cleanup on startup)
