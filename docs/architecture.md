@@ -68,19 +68,21 @@ NoneBot itself is configured in `pyproject.toml` under `[tool.nonebot]`.
 
 | Tool | Class | Description |
 |------|-------|-------------|
-| `recall_memo` | `RecallMemoTool` | Recall user/group memo |
-| `update_memo` | `UpdateMemoTool` | Overwrite user/group memo |
-| `datetime` | `DateTimeTool` | Current date/time |
-| `web_fetch` | `WebFetchTool` | Fetch web page content |
+| `recall_memo` | `RecallMemoTool` | Recall user/group memo by exact id or fuzzy query |
+| `update_memo` | `UpdateMemoTool` | Overwrite user/group memo (async fire-and-forget) |
+| `get_datetime` | `DateTimeTool` | Current date/time (Asia/Shanghai) |
+| `web_fetch` | `WebFetchTool` | Fetch web page content (SSRF-protected) |
 | `web_search` | `WebSearchTool` | DuckDuckGo web search (max 10 results) |
 | `http_api` | `HttpApiTool` | Call NapCat HTTP API |
-| `mute_user` | `MuteUserTool` | Mute group member (admin only) |
-| `set_title` | `SetTitleTool` | Set member title (admin only) |
+| `mute_user` | `MuteUserTool` | Mute group member (admin only; duration=0 unmutes) |
+| `set_title` | `SetTitleTool` | Set member special title (admin only) |
 | `send_group_msg` | `SendGroupMsgTool` | Send group message (admin only) |
 | `save_sticker` | `SaveStickerTool` | Save image to sticker library (conditional on sticker enabled) |
+| `manage_sticker` | `ManageStickerTool` | Update description/usage_hint or delete sticker (delete is admin only; conditional on sticker enabled) |
 | `send_sticker` | `SendStickerTool` | Send sticker as image message (conditional on sticker enabled) |
 | `pass_turn` | — | Skip this turn (injected by LLMClient for all chat calls, not a registered tool) |
-| `append_memo` | — | Append observation to memo pending section (injected during compaction, not a registered tool) |
+| `append_memo` | — | Append observation to memo pending section (injected only during compaction, not a registered tool) |
+| `list_stickers` / `delete_sticker` | — | Dream-only tools defined inline in `dream.py` for sticker library curation |
 
 ## Group Timeline
 

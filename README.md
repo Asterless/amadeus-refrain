@@ -41,7 +41,7 @@
 ## 项目亮点
 
 - **像真人一样主动发言** — 不是"指令式"机器人，而是按 debounce / batch 节奏主动参与群聊，可在 `soul/identity.md` 里写死插话规则
-- **多人格 + 长期记忆** — Markdown 文件定义角色，`storage/memories/` 持久化用户画像与关键事件，模型可主动 `recall_memo` / `update_memo`
+- **可塑人格 + 长期记忆** — `soul/identity.md` 用 Markdown 定义单一角色与插话规则，`storage/memories/` 持久化用户画像与关键事件，模型可主动 `recall_memo` / `update_memo`
 - **多模态视觉** — 自动下载并缩放图片，base64 直送 Anthropic API，支持每条消息图片数限制
 - **原生 Anthropic SSE + Prompt Caching** — 不走 SDK，4 个 cache breakpoint 精细控制，群聊场景能稳定打满 90%+ cache hit
 - **上下文自动压缩** — 超出阈值自动 LLM 压缩前半段，压缩同时把观察提取进长期记忆，circuit breaker 防失败循环
@@ -188,24 +188,30 @@ docker compose up -d
 
 ## Tool Calling 工具集
 
-模型可调用的工具，按需启用：
+模型在每次对话中能调用的工具：
 
-| 工具 | 功能 |
-|------|------|
-| `recall_memo` | 读取某个用户 / 群的长期记忆 |
-| `update_memo` | 写入或更新长期记忆条目 |
-| `append_memo` | 追加观察到 pending 区（compaction 时自动调用） |
-| `web_fetch` | 抓取网页正文（带 SSRF 防护，拒绝内网地址） |
-| `web_search` | DuckDuckGo 搜索 |
-| `http_api` | 调 NapCat HTTP API（获取群信息、用户资料等） |
-| `datetime_now` | 当前时间（带时区） |
-| `save_sticker` | 收藏群里看到的表情包到表情库 |
-| `send_sticker` | 从表情库挑一张发出去 |
-| `list_stickers` | 列出当前可用的表情包 |
-| `set_group_ban` | 禁言（仅管理员触发） |
-| `set_group_special_title` | 设置群头衔（仅管理员触发） |
-| `send_group_msg` | 主动发群消息（仅管理员触发） |
-| `pass_turn` | 主动跳过本轮回复 |
+| 工具 | 功能 | 备注 |
+|------|------|------|
+| `recall_memo` | 按 ID 精确查 / 按 query 模糊搜索用户或群的 memo | — |
+| `update_memo` | **完整覆写**某条 memo（异步 fire-and-forget） | — |
+| `web_fetch` | 抓取网页正文 | 内置 SSRF 防护，拒绝内网 / 本机 / 链路本地地址 |
+| `web_search` | DuckDuckGo 搜索 | 默认 5 条，最多 10 条 |
+| `http_api` | 调 NapCat HTTP API（取群信息、用户资料等） | — |
+| `get_datetime` | 当前日期时间（Asia/Shanghai） | — |
+| `save_sticker` | 把群里看到的图存进表情库 | 需要 `sticker.enabled` |
+| `send_sticker` | 从表情库选一张发出去 | 需要 `sticker.enabled` |
+| `manage_sticker` | 更新表情包描述 / 删除表情包 | 删除仅管理员；需要 `sticker.enabled` |
+| `mute_user` | 禁言群成员（duration=0 解除） | 仅管理员可触发 |
+| `set_title` | 设置 / 清除群专属头衔 | 仅管理员可触发 |
+| `send_group_msg` | 主动向指定群发消息 | 仅管理员可触发 |
+| `pass_turn` | 主动跳过本轮回复（不发任何消息） | 由 client 自动注入，所有对话都能用 |
+
+**仅在内部生命周期使用的工具：**
+
+| 工具 | 触发场景 |
+|------|----------|
+| `append_memo` | 上下文压缩（compact）时由 LLM 自动调用，把新观察追加到 memo 的 `## 待整理` 区 |
+| `list_stickers` / `delete_sticker` | Dream Agent 后台运行时使用，整理表情库 |
 
 ## 本地开发
 
