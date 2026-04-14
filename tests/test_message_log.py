@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 
@@ -60,9 +61,9 @@ async def test_query_respects_time_bound(log: MessageLog) -> None:
     all_rows = await log.query_for_compact("111", before=time.time() + 100)
     cutoff = all_rows[0]["created_at"] + 0.001
 
-    # Insert a second record with created_at guaranteed to be after cutoff
-    # We need to wait a tiny bit so the timestamp is strictly after cutoff
-    # Instead, we'll use a cutoff between the two inserts
+    # Sleep so the next insert is strictly after `cutoff` on the wall clock,
+    # otherwise the second record races inside the 1ms window and leaks in.
+    await asyncio.sleep(0.005)
     await log.record(
         group_id="111",
         role="user",

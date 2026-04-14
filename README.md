@@ -109,17 +109,23 @@ cp .env.example .env
 cp config.example.toml config.toml
 ```
 
-编辑 `.env` 填入：
+两个文件的分工:
 
-| 变量 | 说明 |
-|------|------|
-| `SUPERUSERS` | 管理员 QQ 号，JSON 数组，如 `["10001"]` |
-| `ONEBOT_WS_URLS` | NapCat WebSocket 地址，默认 `["ws://napcat:3001"]` |
-| `LLM_BASE_URL` | Anthropic 兼容 API 地址 |
-| `LLM_API_KEY` | API Key |
-| `LLM_MODEL` | 模型名，如 `claude-sonnet-4-20250514` |
+- **`.env`** — NoneBot 框架层(由 `nonebot.init()` 读取)
+- **`config.toml`** — bot 业务层(由 `src/config_loader.py` 读取)
 
-可选：在 `config.toml` 调整压缩比例、debounce、视觉、记忆等高级参数。
+最少需要填的字段:
+
+| 文件 | 字段 | 说明 |
+|------|------|------|
+| `.env` | `SUPERUSERS` | 管理员 QQ 号 JSON 数组,如 `["10001"]` |
+| `.env` | `ONEBOT_WS_URLS` | NapCat WebSocket 地址,默认 `["ws://napcat:3001"]` |
+| `config.toml` | `[llm].base_url` | Anthropic 兼容 API 地址 |
+| `config.toml` | `[llm].api_key` | API Key |
+| `config.toml` | `[llm].model` | 模型名,如 `claude-sonnet-4-20250514` |
+| `config.toml` | `[admins]` | `"QQ号" = "昵称"` 映射,授权群管理工具 |
+
+`config.toml` 还可调整上下文压缩、debounce、视觉、记忆等高级参数,详见 [配置参考](#配置参考)。LLM 字段也可用 `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` 环境变量覆盖,优先级 TOML < env < CLI。
 
 ### 2. 编辑人设
 
