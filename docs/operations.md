@@ -7,7 +7,6 @@
 - **Always use `docker compose restart napcat`** — never `down` + `up` (device fingerprint changes trigger Tencent anti-fraud)
 - Disconnections are usually Tencent anti-fraud, not persistence issues. Tokens are server-side invalidated; re-login required
 - NapCat uses NTQQ protocol, supports concurrent mobile QQ sessions (multi-device)
-- Bot QQ ID: 10000 (Amadeus), main group: 100001
 
 ## Building & Updating
 
