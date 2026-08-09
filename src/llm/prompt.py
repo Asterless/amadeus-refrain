@@ -18,6 +18,7 @@ from src.identity.models import Identity
 from src.memory.memo_store import MemoStore
 
 if TYPE_CHECKING:
+    from src.meme.knowledge import MemeKnowledgeStore
     from src.meme.store import MemeStore
     from src.sticker.store import StickerStore
 
@@ -37,11 +38,13 @@ class PromptBuilder:
         admins: dict[str, str] | None = None,
         sticker_store: StickerStore | None = None,
         meme_store: MemeStore | None = None,
+        meme_knowledge: MemeKnowledgeStore | None = None,
     ) -> None:
         self._instruction = instruction
         self._admins = admins or {}
         self._sticker_store = sticker_store
         self._meme_store = meme_store
+        self._meme_knowledge = meme_knowledge
         self._static_block: dict[str, Any] = {}
         self._block_cache: dict[str, list[dict[str, Any]]] = {}
 
@@ -83,6 +86,7 @@ class PromptBuilder:
         user_id: str,
         group_id: str | None,
         memo_store: MemoStore,
+        meme_query: str = "",
     ) -> list[dict[str, Any]]:
         """Returns [static_block, entity_block].
 
@@ -92,6 +96,10 @@ class PromptBuilder:
         key = f"group_{group_id}" if group_id else f"user_{user_id}"
         cached = self._block_cache.get(key)
         if cached is not None:
+            if meme_query and self._meme_knowledge is not None:
+                context = self._meme_knowledge.format_context(meme_query)
+                if context:
+                    return [*cached, {"type": "text", "text": context}]
             return cached
 
         text = f"【全局索引】\n{memo_store.serialize_index()}"
@@ -108,6 +116,8 @@ class PromptBuilder:
             text += f"\n\n{self._sticker_store.format_prompt_view()}"
         if self._meme_store is not None:
             text += f"\n\n{self._meme_store.format_prompt_view()}"
+        if self._meme_knowledge is not None:
+            text += f"\n\n{self._meme_knowledge.format_prompt_view()}"
 
         entity_block = {
             "type": "text",
@@ -117,6 +127,10 @@ class PromptBuilder:
         blocks = [self._static_block, entity_block]
         self._block_cache[key] = blocks
         logger.info("system blocks built | key={}", key)
+        if meme_query and self._meme_knowledge is not None:
+            context = self._meme_knowledge.format_context(meme_query)
+            if context:
+                return [*blocks, {"type": "text", "text": context}]
         return blocks
 
     def requester_context(self, user_id: str) -> str:

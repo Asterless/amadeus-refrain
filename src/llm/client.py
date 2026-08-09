@@ -703,6 +703,7 @@ class LLMClient:
                     user_id=user_id,
                     group_id=group_id,
                     memo_store=self._memo_store,
+                    meme_query=content_preview,
                 )
             except Exception:
                 logger.exception("build_blocks failed, falling back to static block")
@@ -854,7 +855,7 @@ class LLMClient:
             ]
             tool_results: list[dict[str, Any]] = []
             for tu, result_text in zip(tool_uses, call_results, strict=True):
-                logger.debug("tool_result | name={} result={!r}", tu.name, result_text[:200])
+                logger.info("tool_result | name={} result={!r}", tu.name, result_text[:200])
                 if tu.name == "search_meme":
                     source_urls.extend(url for url in _extract_source_urls(result_text) if url not in source_urls)
                 tool_results.append({"type": "tool_result", "tool_use_id": tu.id, "content": result_text})

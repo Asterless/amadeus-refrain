@@ -165,9 +165,22 @@ class MemeConfig(BaseModel):
     refresh_minutes: int = Field(default=15, ge=1)
     per_platform_limit: int = Field(default=30, ge=1, le=50)
     storage_file: str = "storage/memes.json"
+    knowledge_file: str = "storage/meme_knowledge.db"
     active_hours: int = Field(default=72, ge=1)
     max_entries: int = Field(default=500, ge=20)
     max_prompt_entries: int = Field(default=12, ge=1, le=30)
+
+
+class MusicConfig(BaseModel):
+    """NetEase Cloud Music API and login session settings."""
+
+    enabled: bool = True
+    api_base_url: str = "http://127.0.0.1:3000"
+    cookie_file: str = "storage/netease_cookie.json"
+    timeout_seconds: float = Field(default=15.0, ge=2, le=60)
+    auto_start: bool = False
+    service_app: str = ""
+    node_executable: str = "node"
 
 
 class SearchConfig(BaseModel):
@@ -201,6 +214,7 @@ class StickerConfig(BaseModel):
 
     enabled: bool = True
     reply_on_receive: bool = False
+    send_probability: float = Field(default=0.8, ge=0.0, le=1.0)
     storage_dir: str = "storage/stickers"
     max_count: int = 200
     auto_collect: bool = True
@@ -217,6 +231,7 @@ class BotConfig(BaseModel):
     compact: CompactConfig = CompactConfig()
     dream: DreamConfig = DreamConfig()
     meme: MemeConfig = MemeConfig()
+    music: MusicConfig = MusicConfig()
     search: SearchConfig = SearchConfig()
     soul: SoulConfig = SoulConfig()
     group: GroupConfig = GroupConfig()

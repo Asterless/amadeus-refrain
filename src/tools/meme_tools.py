@@ -7,6 +7,7 @@ import re
 from typing import Any
 from urllib.parse import urlparse
 
+from src.meme.knowledge import MemeKnowledgeStore
 from src.meme.store import MemeStore, TrendItem
 from src.tools.base import Tool
 from src.tools.context import ToolContext
@@ -95,9 +96,15 @@ class GetHotTrendsTool(Tool):
 
 
 class SearchMemeTool(Tool):
-    def __init__(self, store: MemeStore, web_search: SearchFunction | None = None) -> None:
+    def __init__(
+        self,
+        store: MemeStore,
+        web_search: SearchFunction | None = None,
+        knowledge: MemeKnowledgeStore | None = None,
+    ) -> None:
         self._store = store
         self._web_search = web_search or _ddg_search
+        self._knowledge = knowledge
 
     @property
     def name(self) -> str:
@@ -155,7 +162,21 @@ class SearchMemeTool(Tool):
             f"【查询词】{query}\n"
             f"【本地实时热点匹配】\n{_format_trends(self._store.search(query))}"
         ]
+        if self._knowledge is not None:
+            known = self._knowledge.search(query)
+            if known:
+                lines = [
+                    f"- {record.canonical}：{record.meaning}\n"
+                    f"  用法：{record.usage}\n  证据：{', '.join(record.evidence)}"
+                    for record in known
+                ]
+                sections.append("【已核验梗知识】\n" + "\n".join(lines))
         if web_rows:
+            if self._knowledge is not None:
+                for row in web_rows:
+                    self._knowledge.record_evidence(
+                        str(row.get("href") or ""), str(row.get("title") or "")
+                    )
             lines = []
             for index, row in enumerate(web_rows, 1):
                 lines.append(

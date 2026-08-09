@@ -132,6 +132,8 @@ platforms = ["weibo", "bilibili", "douyin", "xiaohongshu", "zhihu", "baidu"]
 refresh_minutes = 15
 per_platform_limit = 30
 storage_file = "storage/memes.json"
+# 已核验梗义、出处、用法和向量的 SQLite 知识库
+knowledge_file = "storage/meme_knowledge.db"
 # 过期热点不再注入提示词
 active_hours = 72
 max_entries = 500
@@ -226,6 +228,8 @@ describe_mode = "only_at"
 enabled = true
 # 收到群成员发送图片表情时立即让 bot 接话（默认关闭）
 reply_on_receive = false
+# 模型决定发送表情包后，实际发送的概率（0.0-1.0）
+send_probability = 0.8
 # 表情包存储目录
 storage_dir = "storage/stickers"
 # 最大表情包数量（Dream 整理时执行）
