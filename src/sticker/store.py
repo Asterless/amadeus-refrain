@@ -105,6 +105,67 @@ class StickerStore:
         """Return a copy of all sticker entries."""
         return dict(self._index)
 
+    def sync_from_disk(self) -> dict[str, Any]:
+        """Register orphan image files under the storage dir into the index.
+
+        Files already referenced by the index are skipped; unsupported formats
+        (GIF etc.) and non-image files are skipped; files whose content already
+        exists in the index (by content hash) are reported as duplicates.
+        New entries get a placeholder description/usage_hint so the model knows
+        they exist but won't misuse them until the admin confirms.
+
+        Returns a summary dict:
+            {"added": [filenames], "skipped": [filenames], "duplicates": [filenames]}
+        """
+        added: list[str] = []
+        skipped: list[str] = []
+        duplicates: list[str] = []
+        indexed_files = {entry["file"] for entry in self._index.values()}
+
+        for path in sorted(self._storage_dir.iterdir()):
+            if not path.is_file():
+                continue
+            name = path.name
+            if name == _INDEX_FILE or name.endswith(".tmp") or name.startswith("."):
+                continue
+            if name in indexed_files:
+                continue
+            if len(self._index) >= self._max_count:
+                skipped.append(f"{name} (库已满)")
+                continue
+
+            try:
+                image_data = path.read_bytes()
+            except OSError:
+                skipped.append(f"{name} (读取失败)")
+                continue
+
+            try:
+                _detect_format(image_data)
+            except ValueError:
+                skipped.append(f"{name} (格式不支持)")
+                continue
+
+            sticker_id = f"stk_{_compute_hash(image_data)}"
+            if sticker_id in self._index:
+                duplicates.append(name)
+                continue
+
+            self._index[sticker_id] = {
+                "file": name,
+                "description": "（未标注）",
+                "usage_hint": "暂未确认用途，管理员确认后再使用",
+                "source": "manual",
+                "send_count": 0,
+                "last_sent": None,
+                "created_at": datetime.now(UTC).isoformat(),
+            }
+            added.append(name)
+
+        if added:
+            self._save_index()
+        return {"added": added, "skipped": skipped, "duplicates": duplicates}
+
     def get(self, sticker_id: str) -> dict[str, Any] | None:
         """Return entry for the given sticker_id, or None if not found."""
         return self._index.get(sticker_id)
@@ -225,7 +286,7 @@ class StickerStore:
         if not self._index:
             return "当前表情包库为空"
 
-        lines = ["当前表情包库："]
+        lines = ["当前表情包库：", "合适的场景主动用 send_sticker 发表情包（可以文字+表情包组合，别硬塞）"]
         for sticker_id, entry in self._index.items():
             description = entry.get("description", "")
             usage_hint = entry.get("usage_hint", "")

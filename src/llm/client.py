@@ -9,7 +9,7 @@ import json
 import re
 import time
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, Literal
 
 import aiohttp
 from loguru import logger
@@ -70,6 +70,18 @@ def _split_segments(text: str) -> list[str]:
     return segments or [_clean_text(text)]
 
 
+def _is_pass_turn_echo(text: str) -> bool:
+    """True if the model wrote pass_turn as plain text instead of calling the tool.
+
+    Catches variants like "pass_turn", "pass turn", "[pass_turn]", "pass_turn。"
+    or "pass_turn 没人在叫我". The model should call the pass_turn tool instead;
+    echoing it as text would otherwise be sent to the group as a message.
+    """
+    t = text.strip().strip("[]()（）【】").strip()
+    t = re.sub(r"[\s_\-]+", "", t).lower()
+    return t.startswith("passturn")
+
+
 class _ToolUse:
     __slots__ = ("id", "input", "name")
 
@@ -97,8 +109,17 @@ def _content_text(content: Content) -> str:
 async def _resolve_image_refs(
     messages: list[dict[str, Any]],
     image_cache: ImageCache | None,
+    vision_client: Any | None = None,
+    describe_images: bool = True,
 ) -> tuple[list[dict[str, Any]], dict[str, str]]:
-    """Convert image_ref blocks to Anthropic image blocks (base64).
+    """Resolve image_ref blocks for the API call.
+
+    If a vision_client is configured (free vision preprocessing) and
+    describe_images is True, each image is described first and the description
+    is injected as plain text — so text-only chat models can "see" images.
+    Otherwise images are sent as Anthropic image blocks (base64). When
+    describe_images is False (e.g. not @-triggered), images are downgraded to
+    the «图片» placeholder to save vision API quota.
 
     Returns (messages, image_tag_map) where image_tag_map maps "img:N" to disk paths.
     """
@@ -113,6 +134,17 @@ async def _resolve_image_refs(
     for msg in messages:
         content = msg.get("content")
         if not isinstance(content, list):
+            continue
+
+        if not describe_images:
+            # 非 @ 触发：不调识图，图片降级为占位符，节省免费额度
+            new_content = [
+                {"type": "text", "text": "«图片»"}
+                if isinstance(b, dict) and b.get("type") == "image_ref"
+                else b
+                for b in content
+            ]
+            msg["content"] = new_content
             continue
 
         # Collect async resolve tasks with their indices
@@ -137,6 +169,17 @@ async def _resolve_image_refs(
             cache_ctrl = orig_block.get("cache_control")
             resolved = task.result()
             if resolved is not None:
+                if vision_client is not None:
+                    media_type = resolved.get("source", {}).get("media_type", "image/jpeg")
+                    desc = await vision_client.describe(orig_block["path"], media_type)
+                    if desc:
+                        tag_counter += 1
+                        tag = f"img:{tag_counter}"
+                        image_tag_map[tag] = orig_block["path"]
+                        new_content.append({"type": "text", "text": f"«{tag}» 图片描述：{desc}"})
+                        resolved_count += 1
+                        continue
+
                 tag_counter += 1
                 tag = f"img:{tag_counter}"
                 image_tag_map[tag] = orig_block["path"]
@@ -350,6 +393,7 @@ class LLMClient:
         bot_self_id: str = "",
         on_compact: Callable[[], None] | None = None,
         image_cache: ImageCache | None = None,
+        vision_client: Any | None = None,
     ) -> None:
         connector = aiohttp.TCPConnector(
             enable_cleanup_closed=True,
@@ -378,6 +422,7 @@ class LLMClient:
         self._on_compact = on_compact
         self._usage_tracker: UsageTracker | None = None
         self._image_cache = image_cache
+        self._vision_client = vision_client
 
     async def close(self) -> None:
         await self._session.close()
@@ -509,6 +554,9 @@ class LLMClient:
         group_id: str | None = None,
         ctx: ToolContext | None = None,
         on_segment: Callable[[str], Awaitable[None]] | None = None,
+        describe_images: bool = True,
+        response_mode: Literal["direct", "proactive"] = "direct",
+        trigger_context: str = "",
     ) -> str | None:
         content_preview = user_content[:80] if isinstance(user_content, str) else str(user_content)[:80]
         logger.info(
@@ -556,13 +604,34 @@ class LLMClient:
         else:
             system_blocks = [self._prompt.static_block]
 
-        messages, image_tag_map = await _resolve_image_refs(messages, self._image_cache)
+        if response_mode == "direct":
+            turn_policy = (
+                "【本轮回复要求】这是私聊、@你或回复你的明确呼叫。必须针对用户当前消息作出回应，"
+                "不能跳过本轮，也不要输出 pass_turn。"
+            )
+        else:
+            turn_policy = (
+                "【本轮回复要求】这是一次主动参与群聊的机会。只有确实能自然接话时才回复；"
+                "不值得插话时调用 pass_turn。"
+            )
+        if trigger_context:
+            turn_policy += f"\n【触发信息】{trigger_context}"
+        system_blocks = [*system_blocks, {"type": "text", "text": turn_policy}]
+
+        messages, image_tag_map = await _resolve_image_refs(
+            messages,
+            self._image_cache,
+            self._vision_client,
+            describe_images=describe_images,
+        )
 
         tool_defs: list[dict[str, Any]] | None = None
         if not self._tools.empty:
             tool_defs = _to_anthropic_tools(self._tools.to_openai_tools())
-        # pass_turn is always available
-        tool_defs = [*(tool_defs or []), _PASS_TURN_TOOL]
+        if response_mode == "proactive":
+            tool_defs = [*(tool_defs or []), _PASS_TURN_TOOL]
+
+        call_type = "proactive" if response_mode == "proactive" else "chat"
 
         # Debug: hash system blocks and tools to diagnose cache misses
         _log_cache_debug(session_id, system_blocks, tool_defs, len(messages))
@@ -584,14 +653,14 @@ class LLMClient:
 
             # Check for pass_turn
             pass_turn = next((tu for tu in tool_uses if tu.name == "pass_turn"), None)
-            if pass_turn:
+            if pass_turn and response_mode == "proactive":
                 reason = pass_turn.input.get("reason", "")
                 elapsed = time.monotonic() - t0
                 logger.info("pass_turn | session={} reason={!r} elapsed={:.1f}s", session_id, reason, elapsed)
                 if is_group and group_id is not None and self._timeline is not None:
                     self._timeline.set_input_tokens(group_id, result["input_tokens"])
                 self._record_usage(
-                    call_type="proactive",
+                    call_type=call_type,
                     user_id=user_id, group_id=group_id,
                     input_tokens=acc_input, cache_read_tokens=acc_cache_read,
                     cache_create_tokens=acc_cache_create, output_tokens=acc_output,
@@ -601,6 +670,22 @@ class LLMClient:
 
             if not tool_uses:
                 reply = text or "..."
+                if response_mode == "proactive" and _is_pass_turn_echo(reply):
+                    elapsed = time.monotonic() - t0
+                    logger.info(
+                        "pass_turn text suppressed | session={} text={!r}",
+                        session_id, text[:80],
+                    )
+                    if is_group and group_id is not None and self._timeline is not None:
+                        self._timeline.set_input_tokens(group_id, result["input_tokens"])
+                    self._record_usage(
+                        call_type=call_type,
+                        user_id=user_id, group_id=group_id,
+                        input_tokens=acc_input, cache_read_tokens=acc_cache_read,
+                        cache_create_tokens=acc_cache_create, output_tokens=acc_output,
+                        tool_rounds=round_i, elapsed_s=elapsed,
+                    )
+                    return None
                 segments = _split_segments(reply)
                 if on_segment and len(segments) > 1:
                     for seg in segments[:-1]:
@@ -620,7 +705,7 @@ class LLMClient:
                     self._short_term.add(session_id, "assistant", full_reply)
                     self._short_term.set_input_tokens(session_id, result["input_tokens"])
                 self._record_usage(
-                    call_type="proactive" if is_group else "chat",
+                    call_type=call_type,
                     user_id=user_id, group_id=group_id,
                     input_tokens=acc_input, cache_read_tokens=acc_cache_read,
                     cache_create_tokens=acc_cache_create, output_tokens=acc_output,
@@ -668,6 +753,21 @@ class LLMClient:
         acc_cache_read += result.get("cache_read", 0)
         acc_cache_create += result.get("cache_create", 0)
         reply = result["text"] or "..."
+        if response_mode == "proactive" and _is_pass_turn_echo(reply):
+            logger.info(
+                "pass_turn text suppressed | session={} text={!r}",
+                session_id, result["text"][:80],
+            )
+            if is_group and group_id is not None and self._timeline is not None:
+                self._timeline.set_input_tokens(group_id, result["input_tokens"])
+            self._record_usage(
+                call_type=call_type,
+                user_id=user_id, group_id=group_id,
+                input_tokens=acc_input, cache_read_tokens=acc_cache_read,
+                cache_create_tokens=acc_cache_create, output_tokens=acc_output,
+                tool_rounds=MAX_TOOL_ROUNDS, elapsed_s=time.monotonic() - t0,
+            )
+            return None
         segments = _split_segments(reply)
         if on_segment and len(segments) > 1:
             for seg in segments[:-1]:
@@ -683,7 +783,7 @@ class LLMClient:
             self._short_term.set_input_tokens(session_id, result["input_tokens"])
         elapsed = time.monotonic() - t0
         self._record_usage(
-            call_type="proactive" if is_group else "chat",
+            call_type=call_type,
             user_id=user_id, group_id=group_id,
             input_tokens=acc_input, cache_read_tokens=acc_cache_read,
             cache_create_tokens=acc_cache_create, output_tokens=acc_output,

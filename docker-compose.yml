@@ -14,6 +14,7 @@ services:
     environment:
       - NAPCAT_GID=0
       - NAPCAT_UID=0
+      - ACCOUNT=2162948587
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
@@ -30,6 +31,7 @@ services:
     volumes:
       - ./storage:/app/storage
       - ./soul:/app/soul:ro
+      - ./config.toml:/app/config.toml:ro
       - ./.env:/app/.env:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"

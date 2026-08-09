@@ -330,7 +330,7 @@ async def test_compact_calls_on_compact(prompt, short_term, tools) -> None:
 
 class TestPassTurn:
     async def test_pass_turn_returns_none(self, prompt, short_term, tools, timeline, memo_store) -> None:
-        """pass_turn is always honored — chat() returns None."""
+        """Proactive calls honor pass_turn and return None."""
         async for client in _client(prompt, short_term, tools, timeline=timeline, memo_store=memo_store):
             gid = "12345"
             timeline.add(gid, role="user", content="hello", speaker="user(111)")
@@ -351,8 +351,33 @@ class TestPassTurn:
                     identity=_IDENTITY,
                     group_id=gid,
                     ctx=None,
+                    response_mode="proactive",
                 )
             assert result is None
+
+    async def test_direct_call_does_not_offer_pass_turn(self, prompt, short_term, tools) -> None:
+        async for client in _client(prompt, short_term, tools):
+            with patch("src.llm.client._call_api", new_callable=AsyncMock, return_value=MOCK_RESULT_FULL) as mock_api:
+                result = await client.chat(
+                    session_id="private_100", user_id="100",
+                    user_content="hello", identity=_IDENTITY, response_mode="direct",
+                )
+            assert result == "reply text"
+            offered_tools = mock_api.call_args.kwargs.get("tools")
+            assert not offered_tools or all(tool["name"] != "pass_turn" for tool in offered_tools)
+
+    async def test_proactive_call_offers_pass_turn(self, prompt, short_term, tools, timeline) -> None:
+        gid = "12345"
+        timeline.add(gid, role="user", content="hello", speaker="user(111)")
+        async for client in _client(prompt, short_term, tools, timeline=timeline):
+            with patch("src.llm.client._call_api", new_callable=AsyncMock, return_value=MOCK_RESULT_FULL) as mock_api:
+                await client.chat(
+                    session_id="group_12345", user_id="", user_content="",
+                    identity=_IDENTITY, group_id=gid, response_mode="proactive",
+                )
+            offered_tools = mock_api.call_args.kwargs.get("tools")
+            assert offered_tools is not None
+            assert any(tool["name"] == "pass_turn" for tool in offered_tools)
 
 
 # ---------------------------------------------------------------------------

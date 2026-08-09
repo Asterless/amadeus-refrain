@@ -7,6 +7,21 @@
         "host": "0.0.0.0",
         "port": 3001
       }
+    ],
+    "httpServers": [
+      {
+        "name": "http-api",
+        "enable": true,
+        "host": "0.0.0.0",
+        "port": 29300
+      }
+    ],
+    "websocketClients": [
+      {
+        "name": "qq-bot",
+        "enable": true,
+        "url": "ws://qq-bot:8080/onebot/v11/ws"
+      }
     ]
   }
 }

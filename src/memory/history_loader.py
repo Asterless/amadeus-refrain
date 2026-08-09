@@ -70,7 +70,7 @@ async def _load_one_group(
     for msg in messages:
         sender: dict[str, Any] = msg.get("sender", {})
         user_id = str(sender.get("user_id", ""))
-        nickname = sender.get("nickname", "") or sender.get("card", "") or user_id
+        nickname = sender.get("card", "") or sender.get("nickname", "") or user_id
 
         content = await _extract_content(msg.get("message", []), session, image_cache, sticker_store)
         if not content:

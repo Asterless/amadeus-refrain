@@ -90,6 +90,21 @@ class TestNotify:
 
 
 class TestAtHandling:
+    async def test_at_works_without_proactive_identity(self) -> None:
+        llm = _FakeLLM(reply=None)
+        scheduler = GroupChatScheduler(
+            llm=llm, timeline=GroupTimeline(),
+            identity_mgr=_FakeIdentityMgr(_make_identity(proactive=None)),  # type: ignore[arg-type]
+            group_config=GroupConfig(debounce_seconds=999, batch_size=100),
+        )
+        scheduler.notify("111", is_at=True, user_id="42", message_id=7)
+        await asyncio.sleep(0.1)
+        assert len(llm.calls) == 1
+        assert llm.calls[0]["response_mode"] == "direct"
+        assert llm.calls[0]["user_id"] == "42"
+        assert "触发消息 ID=7" in llm.calls[0]["trigger_context"]
+        await scheduler.close()
+
     async def test_at_fires_immediately(self) -> None:
         """notify(is_at=True) fires immediately, skipping debounce."""
         llm = _FakeLLM(reply=None)
@@ -100,6 +115,7 @@ class TestAtHandling:
         scheduler.notify("111", is_at=True)
         await asyncio.sleep(0.1)
         assert len(llm.calls) == 1
+        assert llm.calls[0]["response_mode"] == "direct"
         await scheduler.close()
 
     async def test_at_cancels_pending_debounce(self) -> None:
@@ -212,6 +228,54 @@ class TestAtOnly:
 
 
 class TestPerGroupParams:
+    async def test_proactive_call_uses_proactive_mode(self) -> None:
+        llm = _FakeLLM(reply=None)
+        scheduler = GroupChatScheduler(
+            llm=llm, timeline=GroupTimeline(), identity_mgr=_FakeIdentityMgr(_make_identity()),  # type: ignore[arg-type]
+            group_config=GroupConfig(debounce_seconds=0.05, batch_size=100),
+        )
+        scheduler.notify("123")
+        await asyncio.sleep(0.15)
+        assert llm.calls[0]["response_mode"] == "proactive"
+        assert llm.calls[0]["user_id"] == ""
+        await scheduler.close()
+
+    async def test_proactive_cooldown_does_not_block_direct_call(self) -> None:
+        llm = _FakeLLM(reply="接话")
+        scheduler = GroupChatScheduler(
+            llm=llm, timeline=GroupTimeline(), identity_mgr=_FakeIdentityMgr(_make_identity()),  # type: ignore[arg-type]
+            group_config=GroupConfig(
+                debounce_seconds=0.01, batch_size=100, proactive_cooldown_seconds=3600,
+            ),
+        )
+        scheduler.notify("123")
+        await asyncio.sleep(0.1)
+        scheduler.notify("123")
+        await asyncio.sleep(0.1)
+        assert len(llm.calls) == 1
+
+        scheduler.notify("123", is_at=True, user_id="9", message_id=99)
+        await asyncio.sleep(0.1)
+        assert len(llm.calls) == 2
+        assert llm.calls[-1]["response_mode"] == "direct"
+        await scheduler.close()
+
+    async def test_plain_message_while_busy_waits_for_debounce(self) -> None:
+        llm = _FakeLLM(reply=None, delay=0.15)
+        scheduler = GroupChatScheduler(
+            llm=llm, timeline=GroupTimeline(), identity_mgr=_FakeIdentityMgr(_make_identity()),  # type: ignore[arg-type]
+            group_config=GroupConfig(debounce_seconds=0.1, batch_size=100),
+        )
+        scheduler.notify("123", is_at=True, user_id="9")
+        await asyncio.sleep(0.05)
+        scheduler.notify("123")
+        await asyncio.sleep(0.14)
+        assert len(llm.calls) == 1
+        await asyncio.sleep(0.12)
+        assert len(llm.calls) == 2
+        assert llm.calls[-1]["response_mode"] == "proactive"
+        await scheduler.close()
+
     async def test_per_group_debounce(self) -> None:
         """Group 123 has 0.3s debounce (override), group 456 uses global 0.05s."""
         llm = _FakeLLM(reply=None)

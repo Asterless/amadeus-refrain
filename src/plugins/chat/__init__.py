@@ -38,6 +38,7 @@ from src.memory.message_log import MessageLog
 from src.memory.short_term import ShortTermMemory
 from src.memory.types import Content, ContentBlock, ImageRefBlock, TextBlock
 from src.sticker.store import StickerStore
+from src.vision import VisionClient
 from src.tools import ToolRegistry
 from src.tools.context import ToolContext
 from src.tools.datetime_tool import DateTimeTool
@@ -66,6 +67,7 @@ _image_cache: ImageCache
 _vision_enabled: bool = True
 _max_images_per_message: int = 5
 _sticker_store: StickerStore | None = None
+_vision_client: VisionClient | None = None
 _startup_triggered: bool = False
 
 
@@ -73,7 +75,7 @@ _startup_triggered: bool = False
 async def _init() -> None:
     global _llm, _dream, _dream_enabled, _scheduler, _identity_mgr, _usage_tracker
     global _message_log, _timeline, _short_term, _allowed_groups, _allowed_private_users, _group_config
-    global _image_cache, _vision_enabled, _max_images_per_message, _sticker_store
+    global _image_cache, _vision_enabled, _max_images_per_message, _sticker_store, _vision_client
 
     bot_config = load_config()
     _allowed_groups = set(bot_config.group.allowed_groups)
@@ -94,6 +96,32 @@ async def _init() -> None:
         _sticker_store = StickerStore(
             storage_dir=bot_config.sticker.storage_dir,
             max_count=bot_config.sticker.max_count,
+        )
+        synced = _sticker_store.sync_from_disk()
+        if synced["added"] or synced["skipped"] or synced["duplicates"]:
+            logger.info(
+                "sticker sync_from_disk | added={} skipped={} duplicates={}",
+                synced["added"], synced["skipped"], synced["duplicates"],
+            )
+
+    # 免费识图预处理：聊天模型不支持图片时，先用视觉模型把图转成文字描述
+    _vision_client = None
+    if (
+        bot_config.vision.enabled
+        and bot_config.vision.base_url
+        and bot_config.vision.api_key
+        and bot_config.vision.model
+    ):
+        _vision_client = VisionClient(
+            base_url=bot_config.vision.base_url,
+            api_key=bot_config.vision.api_key,
+            model=bot_config.vision.model,
+        )
+        logger.info(
+            "[Vision] 识图预处理已启用 | model={} base_url={} describe_mode={}",
+            bot_config.vision.model,
+            bot_config.vision.base_url,
+            bot_config.vision.describe_mode,
         )
 
     memo_store = MemoStore(
@@ -174,6 +202,7 @@ async def _init() -> None:
         memo_store=memo_store,
         on_compact=None,
         image_cache=_image_cache if _vision_enabled else None,
+        vision_client=_vision_client,
         message_log=_message_log,
     )
     if bot_config.llm.usage.enabled:
@@ -192,6 +221,8 @@ async def _init() -> None:
         timeline=_timeline,
         identity_mgr=_identity_mgr,
         group_config=bot_config.group,
+        always_describe_images=bot_config.vision.describe_mode == "always",
+        reply_on_sticker=bot_config.sticker.enabled and bot_config.sticker.reply_on_receive,
     )
 
 
@@ -202,6 +233,8 @@ async def _shutdown() -> None:
     await _llm.close()
     await _scheduler.close()
     await _message_log.close()
+    if _vision_client is not None:
+        await _vision_client.close()
     await _usage_tracker.close()
 
 
@@ -244,7 +277,7 @@ async def _on_connect(bot: Bot) -> None:
         logger.exception("failed to get group list")
         return
 
-    if is_first_connect:
+    if is_first_connect and bot_config.group.startup_catchup:
         _startup_triggered = True
         logger.info("loading history | groups={}", len(group_ids))
         try:
@@ -313,8 +346,7 @@ async def _render_message(
 
     Returns plain str if no images; list[ContentBlock] if images present.
     """
-    text_parts: list[str] = []
-    images: list[ImageRefBlock] = []
+    ordered_parts: list[str | ImageRefBlock | asyncio.Task[ImageRefBlock | None]] = []
     image_count = 0
 
     # 引用回复 → «回复 昵称(QQ号): 原文摘要»
@@ -330,64 +362,80 @@ async def _render_message(
             if len(original) > cap:
                 original = original[:cap] + "…"
             label = "回复 我" if is_reply_to_bot else f"回复 {nick}({uid})"
-            text_parts.append(f"«{label}: {original}» ")
+            ordered_parts.append(f"«{label}: {original}» ")
 
     image_tasks: list[asyncio.Task[ImageRefBlock | None]] = []
 
     for seg in msg:
         if seg.type == "text":
-            text_parts.append(seg.data.get("text", ""))
+            ordered_parts.append(seg.data.get("text", ""))
         elif seg.type == "at":
             qq = seg.data.get("qq", "")
-            text_parts.append("@我" if self_id and qq == self_id else f"@{qq}")
+            if self_id and qq == self_id:
+                ordered_parts.append("@我")
+            else:
+                name = seg.data.get("name", "") or ""
+                ordered_parts.append(f"@{name}({qq})" if name else f"@{qq}")
         elif seg.type == "face":
             face_id = seg.data.get("id", "")
             try:
-                text_parts.append(face_to_text(int(face_id)))
+                ordered_parts.append(face_to_text(int(face_id)))
             except (ValueError, TypeError):
-                text_parts.append("«表情»")
+                ordered_parts.append("«表情»")
         elif seg.type == "image" and _vision_enabled and session is not None:
             if image_count >= _max_images_per_message:
-                text_parts.append("«图片»")
+                ordered_parts.append("«图片»")
                 continue
             url = seg.data.get("url", "")
             file_id = seg.data.get("file", "")
             if url and file_id:
                 file_id = file_id.split(".")[0] if "." in file_id else file_id
-                image_tasks.append(
-                    asyncio.ensure_future(_image_cache.save(session, url=url, file_id=file_id))
-                )
+                task = asyncio.ensure_future(_image_cache.save(session, url=url, file_id=file_id))
+                image_tasks.append(task)
+                ordered_parts.append(task)
                 image_count += 1
             else:
-                text_parts.append("«图片»")
+                ordered_parts.append("«图片»")
         elif seg.type == "image":
             summary = seg.data.get("summary", "").strip("[]") or "图片"
-            text_parts.append(f"«{summary}»")
+            ordered_parts.append(f"«{summary}»")
 
     # Resolve all image downloads concurrently
     if image_tasks:
         t0 = time.perf_counter()
         results = await asyncio.gather(*image_tasks, return_exceptions=True)
-        for r in results:
-            if isinstance(r, BaseException) or r is None:
-                text_parts.append("«图片»")
+        result_by_task = dict(zip(image_tasks, results, strict=True))
+        resolved_parts: list[str | ImageRefBlock] = []
+        for part in ordered_parts:
+            if isinstance(part, asyncio.Task):
+                result = result_by_task[part]
+                resolved_parts.append("«图片»" if isinstance(result, BaseException) or result is None else result)
             else:
-                images.append(r)
+                resolved_parts.append(part)
+        ordered_parts = resolved_parts
         elapsed_ms = (time.perf_counter() - t0) * 1000
         logger.debug(
             "render_message images | tasks={} ok={} elapsed={:.0f}ms",
-            len(image_tasks), len(images), elapsed_ms,
+            len(image_tasks), sum(isinstance(p, dict) for p in ordered_parts), elapsed_ms,
         )
 
-    text = "".join(text_parts).strip()
-
-    if not images:
-        return text
+    if not any(isinstance(part, dict) for part in ordered_parts):
+        return "".join(part for part in ordered_parts if isinstance(part, str)).strip()
 
     blocks: list[ContentBlock] = []
+    text_buffer: list[str] = []
+    for part in ordered_parts:
+        if isinstance(part, str):
+            text_buffer.append(part)
+            continue
+        text = "".join(text_buffer).strip()
+        if text:
+            blocks.append(TextBlock(type="text", text=text))
+        text_buffer.clear()
+        blocks.append(part)
+    text = "".join(text_buffer).strip()
     if text:
         blocks.append(TextBlock(type="text", text=text))
-    blocks.extend(images)
     return blocks
 
 
@@ -414,7 +462,8 @@ async def collect_group_context(bot: Bot, event: GroupMessageEvent) -> None:
     if not content:
         return
 
-    nickname = event.sender.nickname or str(event.user_id)
+    # 群聊优先用群名片（card），全局昵称（nickname）与群里看到的称呼可能不一致
+    nickname = event.sender.card or event.sender.nickname or str(event.user_id)
     group_id = str(event.group_id)
     preview = content if isinstance(content, str) else "".join(
         b["text"] for b in content if isinstance(b, dict) and b.get("type") == "text"  # type: ignore[union-attr]
@@ -430,7 +479,21 @@ async def collect_group_context(bot: Bot, event: GroupMessageEvent) -> None:
         message_id=event.message_id,
     )
 
-    _scheduler.notify(group_id, is_at=event.is_tome())
+    is_sticker = any(
+        seg.type == "image"
+        and str(seg.data.get("subType", seg.data.get("sub_type", "0"))) == "1"
+        for seg in event.get_message()
+    )
+    reply_sender = getattr(event.reply, "sender", None) if event.reply is not None else None
+    reply_user_id = str(getattr(reply_sender, "user_id", "") or "")
+    _scheduler.notify(
+        group_id,
+        is_at=event.is_tome(),
+        is_reply_to_bot=bool(reply_user_id and reply_user_id == bot.self_id),
+        is_sticker=is_sticker,
+        user_id=str(event.user_id),
+        message_id=event.message_id,
+    )
 
 
 # ── 群禁言监听 ──

@@ -20,7 +20,8 @@ The bot can autonomously join group conversations when the identity has a `## Êè
 - **Batch**: if messages accumulate to `batch_size` before the debounce fires, the scheduler triggers immediately.
 - **@bot interrupt**: when someone @s the bot, the scheduler cancels any pending debounce/running proactive task for that group, yielding to the direct @bot handler. After the @bot reply completes, the scheduler is re-enabled.
 - **pass_turn tool**: when the scheduler fires, the LLM receives the `pass_turn` tool. If the model decides there's nothing worth saying, it calls `pass_turn` and no message is sent.
-- **Startup catch-up**: on bot connect, the scheduler triggers once for each group that has history, so the bot can respond to messages it missed while offline.
+- **Startup catch-up**: disabled by default. Set `group.startup_catchup = true` to let the scheduler evaluate loaded history after the first connection.
+- **Proactive limits**: successful proactive replies are subject to a per-group cooldown and hourly reply budget. Direct @/reply triggers bypass these limits.
 
 ## Config
 
@@ -46,7 +47,7 @@ Key config sections:
 | `soul` | `dir` | Soul config directory |
 | `log` | `dir` | Log directory |
 | `vision` | `enabled`, `max_images_per_message`, `max_dimension`, `cache_dir`, `cache_max_age_hours` | Multimodal image understanding |
-| `sticker` | `enabled`, `storage_dir`, `max_count` | Sticker library |
+| `sticker` | `enabled`, `reply_on_receive`, `storage_dir`, `max_count` | Sticker library and optional immediate replies to QQ image stickers |
 | top-level | `admins`, `allowed_private_users` | Access control & admin designation |
 
 `admins` is a `dict[str, str]` mapping QQ numbers to nicknames. Admins are injected into the system prompt as trusted sources and authorized for group admin tools.

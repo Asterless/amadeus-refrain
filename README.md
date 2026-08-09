@@ -184,7 +184,7 @@ docker compose up -d
 | `[llm.usage]` | `enabled` / `slow_threshold_s` | 用量追踪与慢调用告警 |
 | `[compact]` | `ratio` / `compress_ratio` / `cache_hit_warn` | 压缩触发比例 + cache 命中率告警 |
 | `[memo]` | `dir` / `user_max_chars` / `index_max_lines` | 长期记忆存储 |
-| `[group]` | `debounce_seconds` / `batch_size` / `at_only` / `blocked_users` | 群聊全局调度参数 |
+| `[group]` | `debounce_seconds` / `batch_size` / `at_only` / `startup_catchup` / `proactive_cooldown_seconds` / `proactive_max_replies_per_hour` / `blocked_users` | 群聊全局调度参数 |
 | `[group.overrides.<gid>]` | 同 `[group]` 字段子集 | 单群覆盖（未填字段 fallback 全局） |
 | `[vision]` | `enabled` / `max_images_per_message` / `max_dimension` | 多模态图片处理 |
 | `[dream]` | `enabled` / `interval_hours` / `max_rounds` | Dream Agent 后台整理 |

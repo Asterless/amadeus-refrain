@@ -1,6 +1,6 @@
 """Bot 配置：嵌套 Pydantic 模型，支持 TOML / 环境变量 / CLI 覆盖。"""
 
-from typing import Self
+from typing import Literal, Self
 
 from pydantic import BaseModel, model_validator
 
@@ -49,6 +49,8 @@ class ResolvedGroupConfig(BaseModel):
     debounce_seconds: float = 5.0
     batch_size: int = 10
     history_load_count: int = 30
+    proactive_cooldown_seconds: float = 60.0
+    proactive_max_replies_per_hour: int = 12
 
 
 class GroupOverride(BaseModel):
@@ -59,6 +61,8 @@ class GroupOverride(BaseModel):
     debounce_seconds: float | None = None
     batch_size: int | None = None
     history_load_count: int | None = None
+    proactive_cooldown_seconds: float | None = None
+    proactive_max_replies_per_hour: int | None = None
 
 
 class GroupConfig(BaseModel):
@@ -69,7 +73,10 @@ class GroupConfig(BaseModel):
     debounce_seconds: float = 5.0
     batch_size: int = 10
     at_only: bool = False
+    startup_catchup: bool = False
     blocked_users: list[int] = []
+    proactive_cooldown_seconds: float = 60.0
+    proactive_max_replies_per_hour: int = 12
     overrides: dict[int, GroupOverride] = {}
 
     def resolve(self, group_id: int) -> ResolvedGroupConfig:
@@ -83,6 +90,8 @@ class GroupConfig(BaseModel):
                 debounce_seconds=self.debounce_seconds,
                 batch_size=self.batch_size,
                 history_load_count=self.history_load_count,
+                proactive_cooldown_seconds=self.proactive_cooldown_seconds,
+                proactive_max_replies_per_hour=self.proactive_max_replies_per_hour,
             )
         o = override
         return ResolvedGroupConfig(
@@ -91,6 +100,16 @@ class GroupConfig(BaseModel):
             debounce_seconds=o.debounce_seconds if o.debounce_seconds is not None else self.debounce_seconds,
             batch_size=o.batch_size if o.batch_size is not None else self.batch_size,
             history_load_count=o.history_load_count if o.history_load_count is not None else self.history_load_count,
+            proactive_cooldown_seconds=(
+                o.proactive_cooldown_seconds
+                if o.proactive_cooldown_seconds is not None
+                else self.proactive_cooldown_seconds
+            ),
+            proactive_max_replies_per_hour=(
+                o.proactive_max_replies_per_hour
+                if o.proactive_max_replies_per_hour is not None
+                else self.proactive_max_replies_per_hour
+            ),
         )
 
 
@@ -145,12 +164,20 @@ class VisionConfig(BaseModel):
     max_dimension: int = 768
     cache_dir: str = "storage/image_cache"
     cache_max_age_hours: int = 24
+    # 免费识图预处理（OpenAI 兼容端点，如智谱 GLM-4.6V-Flash）
+    # 聊天模型不支持图片时，先用这个模型把图转成文字描述
+    base_url: str = ""
+    api_key: str = ""
+    model: str = ""
+    # 识图策略：only_at = 仅被 @ 触发回复时识图（省免费额度）；always = 所有回复都识图
+    describe_mode: Literal["only_at", "always"] = "only_at"
 
 
 class StickerConfig(BaseModel):
     """表情包系统配置。"""
 
     enabled: bool = True
+    reply_on_receive: bool = False
     storage_dir: str = "storage/stickers"
     max_count: int = 200
 

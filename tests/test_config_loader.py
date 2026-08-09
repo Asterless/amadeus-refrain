@@ -288,6 +288,8 @@ class TestGroupConfigResolve:
         assert resolved.debounce_seconds == 5.0
         assert resolved.batch_size == 10
         assert resolved.history_load_count == 30
+        assert resolved.proactive_cooldown_seconds == 60.0
+        assert resolved.proactive_max_replies_per_hour == 12
 
     def test_resolve_full_override(self) -> None:
         """Override supplies all fields — all override values win."""
@@ -297,6 +299,7 @@ class TestGroupConfigResolve:
                 123: GroupOverride(
                     blocked_users=[200], at_only=True,
                     debounce_seconds=10.0, batch_size=20, history_load_count=50,
+                    proactive_cooldown_seconds=120.0, proactive_max_replies_per_hour=6,
                 ),
             },
         )
@@ -306,6 +309,8 @@ class TestGroupConfigResolve:
         assert resolved.debounce_seconds == 10.0
         assert resolved.batch_size == 20
         assert resolved.history_load_count == 50
+        assert resolved.proactive_cooldown_seconds == 120.0
+        assert resolved.proactive_max_replies_per_hour == 6
 
     def test_resolve_partial_override_falls_back(self) -> None:
         """Override only sets at_only — rest falls back to global."""

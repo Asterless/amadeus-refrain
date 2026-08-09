@@ -28,6 +28,8 @@ class SaveStickerTool(Tool):
             "image_tag 使用图片旁边的 «img:N» 标签。"
             "只在管理员要求时才调用，必须将管理员QQ号填入 requested_by。"
             "只在你完全理解图片含义、清楚使用场景、且符合自己性格时才调用。"
+            "description 要具体描述画面内容和情绪/梗（例如：熊猫头竖大拇指，得意）；"
+            "usage_hint 要写清楚什么场景适合发（例如：别人夸你的时候）。"
         )
 
     @property
