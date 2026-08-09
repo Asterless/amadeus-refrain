@@ -11,6 +11,7 @@ storage/logs/
 storage/*.db
 storage/image_cache/
 storage/stickers/
+storage/memes.json
 !storage/.gitkeep
 !storage/memories/.example.qmd
 napcat/data/

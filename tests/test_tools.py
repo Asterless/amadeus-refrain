@@ -7,7 +7,13 @@ from src.tools.datetime_tool import DateTimeTool
 from src.tools.group_admin import MuteUserTool
 from src.tools.registry import ToolRegistry
 from src.tools.web_fetch import _is_safe_url
-from src.tools.web_search import WebSearchTool
+from src.tools.web_search import (
+    HybridWebSearch,
+    WebSearchTool,
+    _ddg_search_sync,
+    _parse_openai_search_response,
+    _rank_results,
+)
 
 # ── SSRF 校验 ──
 
@@ -162,3 +168,157 @@ async def test_web_search_max_results_capped(monkeypatch: pytest.MonkeyPatch) ->
     ctx = ToolContext(user_id="123")
     await tool.execute(ctx, query="test", max_results=99)
     assert captured["n"] == 10
+
+
+def test_web_search_aggregates_engines_and_tolerates_partial_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def fake_backend(query: str, max_results: int, backend: str) -> list[dict[str, str]]:
+        calls.append(backend)
+        if backend == "google":
+            raise RuntimeError("provider unavailable")
+        return [
+            {
+                "title": f"丑橘是什么梗 - {backend}",
+                "href": f"https://{backend}.example/result",
+                "body": "丑橘是近期流行的橘猫表情包。",
+            }
+        ]
+
+    monkeypatch.setattr("src.tools.web_search._search_backend_sync", fake_backend)
+    results = _ddg_search_sync("丑橘是什么梗", 3)
+
+    assert set(calls) == {"bing", "google", "brave", "duckduckgo"}
+    assert len(results) == 3
+    assert all("丑橘" in result["title"] for result in results)
+
+
+def test_web_search_falls_back_to_auto_when_named_engines_are_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def fake_backend(query: str, max_results: int, backend: str) -> list[dict[str, str]]:
+        calls.append(backend)
+        if backend != "auto":
+            return []
+        return [
+            {
+                "title": "回退结果",
+                "href": "https://example.com/fallback",
+                "body": "有效摘要",
+            }
+        ]
+
+    monkeypatch.setattr("src.tools.web_search._search_backend_sync", fake_backend)
+    results = _ddg_search_sync("测试查询", 5)
+
+    assert calls.count("auto") == 1
+    assert results[0]["title"] == "回退结果"
+
+
+def test_web_search_ranks_chinese_relevance_and_filters_junk() -> None:
+    rows = [
+        {
+            "title": "Unrelated English result",
+            "href": "https://example.com/page",
+            "body": "Nothing useful here.",
+        },
+        {
+            "title": "丑橘是什么梗",
+            "href": "https://www.bilibili.com/video/1?utm_source=test",
+            "body": "丑橘是一只橘猫相关的网络梗。",
+        },
+        {
+            "title": "丑橘是什么梗",
+            "href": "https://duplicate.example/page",
+            "body": "重复标题。",
+        },
+        {
+            "title": "丑橘字体下载",
+            "href": "https://spam.example/font.ttf",
+            "body": "font",
+        },
+        {
+            "title": "丑橘官方入口",
+            "href": "https://spam.example/page",
+            "body": "app下载送彩金",
+        },
+        {
+            "title": "丑橘登录",
+            "href": "https://example.com/login?next=home",
+            "body": "登录页面",
+        },
+    ]
+
+    results = _rank_results("丑橘是什么梗", rows)
+
+    assert results[0]["href"] == "https://www.bilibili.com/video/1"
+    assert len(results) == 2
+
+
+def test_openai_web_search_parser_uses_only_returned_sources() -> None:
+    payload = {
+        "output": [
+            {
+                "type": "web_search_call",
+                "action": {
+                    "sources": [
+                        {"title": "抖音原视频", "url": "https://douyin.com/video/1?utm_source=x"}
+                    ]
+                },
+            },
+            {
+                "type": "message",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": "丑橘是一只近期走红的猫。正文中伪造 https://fake.example 不应采纳。",
+                        "annotations": [
+                            {
+                                "type": "url_citation",
+                                "title": "B站考据",
+                                "url": "https://www.bilibili.com/video/2",
+                            }
+                        ],
+                    }
+                ],
+            },
+        ]
+    }
+
+    results = _parse_openai_search_response(payload)
+
+    assert [row["href"] for row in results] == [
+        "https://douyin.com/video/1",
+        "https://www.bilibili.com/video/2",
+    ]
+    assert all("fake.example" not in row["href"] for row in results)
+    assert all("丑橘是一只" in row["body"] for row in results)
+
+
+async def test_hybrid_search_survives_openai_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_ddgs(query: str, max_results: int) -> list[dict[str, str]]:
+        return [
+            {
+                "title": "丑橘是什么梗",
+                "href": "https://www.bilibili.com/video/ddgs",
+                "body": "DDGS 搜索结果",
+            }
+        ]
+
+    class BrokenOpenAI:
+        async def search(self, query: str, max_results: int) -> list[dict[str, str]]:
+            raise RuntimeError("OpenAI unavailable")
+
+        async def close(self) -> None:
+            return None
+
+    monkeypatch.setattr("src.tools.web_search._ddg_search", fake_ddgs)
+    service = HybridWebSearch(BrokenOpenAI())  # type: ignore[arg-type]
+
+    results = await service.search("丑橘是什么梗", 5)
+
+    assert results[0]["href"] == "https://www.bilibili.com/video/ddgs"

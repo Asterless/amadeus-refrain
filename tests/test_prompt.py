@@ -1,7 +1,10 @@
+from pathlib import Path
+
 import pytest
 
 from src.identity.models import Identity
 from src.llm.prompt import PromptBuilder, load_instruction
+from src.meme.store import MemeStore, TrendItem
 from src.memory.memo_store import MemoStore
 from src.sticker.store import StickerStore
 
@@ -115,3 +118,18 @@ async def test_build_blocks_no_sticker_store(
     blocks = await pb.build_blocks(user_id="100", group_id=None, memo_store=store)
     entity_text = blocks[1]["text"]
     assert "表情包" not in entity_text
+
+
+async def test_build_blocks_includes_realtime_meme_candidates(
+    identity: Identity, store: MemoStore, tmp_path: Path
+) -> None:
+    meme_store = MemeStore(str(tmp_path / "memes.json"))
+    meme_store.update([TrendItem(platform="bilibili", title="刚出现的新梗", rank=1)])
+    pb = PromptBuilder(instruction="", meme_store=meme_store)
+    pb.build_static(identity, bot_self_id="999")
+
+    blocks = await pb.build_blocks(user_id="100", group_id="200", memo_store=store)
+    entity_text = blocks[1]["text"]
+    assert "实时热点候选" in entity_text
+    assert "刚出现的新梗" in entity_text
+    assert "不代表它们是梗" in entity_text
