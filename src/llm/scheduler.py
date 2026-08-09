@@ -295,6 +295,7 @@ class GroupChatScheduler:
         trigger_message_id = slot.trigger_message_id if slot else None
         trigger_reason = slot.trigger_reason if slot else ""
         describe_images = self._always_describe_images or is_direct
+        sent_segments: set[str] = set()
         try:
             for attempt in range(_RATE_LIMIT_MAX_RETRIES + 1):
                 try:
@@ -308,6 +309,9 @@ class GroupChatScheduler:
                         trigger_context += f"；触发消息 ID={trigger_message_id}"
 
                     async def on_segment(text: str) -> None:
+                        if not text or text in sent_segments:
+                            return
+                        sent_segments.add(text)
                         await self._send_to_group(group_id, text)
 
                     reply = await self._llm.chat(
@@ -323,8 +327,9 @@ class GroupChatScheduler:
                         trigger_context=trigger_context,
                     )
 
-                    if reply:
+                    if reply and reply not in sent_segments:
                         await self._send_to_group(group_id, reply)
+                        sent_segments.add(reply)
                         if not is_direct and slot:
                             now = time.monotonic()
                             slot.last_proactive_reply_at = now

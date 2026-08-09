@@ -264,7 +264,7 @@ class MemoStore:
         2. Enforce max_chars limit
         3. Prepend metadata comment
         4. Write to .md.tmp
-        5. os.rename(.md.tmp → .md) (atomic on POSIX)
+        5. os.replace(.md.tmp → .md) (atomic replacement)
         6. Append one line to .log if history_enabled
         7. Update _memos cache and _mentions index incrementally
         8. Rewrite index.md
@@ -294,7 +294,7 @@ class MemoStore:
                 await f.write(full_text)
 
             # 4. Atomic rename
-            os.rename(tmp_path, md_path)
+            os.replace(tmp_path, md_path)
 
             # 5. Append to changelog
             if self._history_enabled:
@@ -318,7 +318,7 @@ class MemoStore:
             index_tmp = self._base_dir / "index.md.tmp"
             async with aiofiles.open(index_tmp, "w", encoding="utf-8") as f:
                 await f.write(index_content)
-            os.rename(index_tmp, index_path)
+            os.replace(index_tmp, index_path)
 
         logger.debug(f"Wrote memo {id} from source={source!r}")
 
