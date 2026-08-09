@@ -3,6 +3,7 @@
 import asyncio
 import time
 from datetime import timedelta
+from pathlib import Path
 
 import aiohttp
 from loguru import logger
@@ -30,6 +31,7 @@ from src.llm.dream import DreamAgent, setup_dream_logger
 from src.llm.prompt import PromptBuilder, load_instruction
 from src.llm.scheduler import GroupChatScheduler
 from src.llm.usage import UsageTracker
+from src.meme import MemeRadar, MemeStore, UapiTrendProvider
 from src.memory.group_timeline import GroupTimeline
 from src.memory.history_loader import load_group_history
 from src.memory.image_cache import ImageCache
@@ -38,22 +40,25 @@ from src.memory.message_log import MessageLog
 from src.memory.short_term import ShortTermMemory
 from src.memory.types import Content, ContentBlock, ImageRefBlock, TextBlock
 from src.sticker.store import StickerStore
-from src.vision import VisionClient
 from src.tools import ToolRegistry
 from src.tools.context import ToolContext
 from src.tools.datetime_tool import DateTimeTool
 from src.tools.group_admin import MuteUserTool, SendGroupMsgTool, SetTitleTool
 from src.tools.http_api import HttpApiTool
+from src.tools.meme_tools import GetHotTrendsTool, SearchMemeTool
 from src.tools.memo_tools import RecallMemoTool, UpdateMemoTool
-from src.tools.sticker_tools import ManageStickerTool, SaveStickerTool, SendStickerTool
+from src.tools.sticker_tools import ManageStickerTool, SaveStickerTool, SendStickerTool, _deliver_sticker
 from src.tools.web_fetch import WebFetchTool
-from src.tools.web_search import WebSearchTool
+from src.tools.web_search import HybridWebSearch, OpenAIWebSearchClient, WebSearchTool
+from src.vision import VisionClient
 
 driver = get_driver()
 
 _llm: LLMClient
 _dream: DreamAgent
 _dream_enabled: bool = False
+_meme_radar: MemeRadar | None = None
+_search_service: HybridWebSearch | None = None
 _scheduler: GroupChatScheduler
 _usage_tracker: UsageTracker
 _message_log: MessageLog
@@ -68,14 +73,19 @@ _vision_enabled: bool = True
 _max_images_per_message: int = 5
 _sticker_store: StickerStore | None = None
 _vision_client: VisionClient | None = None
+_sticker_auto_collect: bool = True
+_sticker_auto_collect_only_stickers: bool = True
+_sticker_auto_collect_cooldown: int = 8
+_sticker_collect_last: dict[str, float] = {}
 _startup_triggered: bool = False
 
 
 @driver.on_startup
 async def _init() -> None:
-    global _llm, _dream, _dream_enabled, _scheduler, _identity_mgr, _usage_tracker
+    global _llm, _dream, _dream_enabled, _meme_radar, _search_service, _scheduler, _identity_mgr, _usage_tracker
     global _message_log, _timeline, _short_term, _allowed_groups, _allowed_private_users, _group_config
     global _image_cache, _vision_enabled, _max_images_per_message, _sticker_store, _vision_client
+    global _sticker_auto_collect, _sticker_auto_collect_only_stickers, _sticker_auto_collect_cooldown
 
     bot_config = load_config()
     _allowed_groups = set(bot_config.group.allowed_groups)
@@ -88,6 +98,9 @@ async def _init() -> None:
     )
     _vision_enabled = bot_config.vision.enabled
     _max_images_per_message = bot_config.vision.max_images_per_message
+    _sticker_auto_collect = bot_config.sticker.auto_collect
+    _sticker_auto_collect_only_stickers = bot_config.sticker.auto_collect_only_stickers
+    _sticker_auto_collect_cooldown = bot_config.sticker.auto_collect_cooldown_seconds
 
     # Cleanup stale cache on startup
     await _image_cache.cleanup(max_age=timedelta(hours=bot_config.vision.cache_max_age_hours))
@@ -138,12 +151,43 @@ async def _init() -> None:
 
     superusers = set(bot_config.admins.keys()) | driver.config.superusers
 
+    meme_store: MemeStore | None = None
+    if bot_config.meme.enabled:
+        meme_store = MemeStore(
+            bot_config.meme.storage_file,
+            active_hours=bot_config.meme.active_hours,
+            max_entries=bot_config.meme.max_entries,
+            max_prompt_entries=bot_config.meme.max_prompt_entries,
+        )
+
+    _search_service = None
+    if bot_config.search.openai_enabled:
+        if bot_config.search.openai_api_key and bot_config.search.openai_model:
+            _search_service = HybridWebSearch(
+                OpenAIWebSearchClient(
+                    base_url=bot_config.search.openai_base_url,
+                    api_key=bot_config.search.openai_api_key,
+                    model=bot_config.search.openai_model,
+                )
+            )
+            logger.info(
+                "[Search] OpenAI web_search enabled | model={} base_url={}",
+                bot_config.search.openai_model,
+                bot_config.search.openai_base_url,
+            )
+        else:
+            logger.warning("[Search] OpenAI web_search requested but API key or model is empty")
+
+    web_search = _search_service.search if _search_service is not None else None
     tools = ToolRegistry()
     tools.register(RecallMemoTool(memo_store))
     tools.register(UpdateMemoTool(memo_store))
     tools.register(DateTimeTool())
     tools.register(WebFetchTool())
-    tools.register(WebSearchTool())
+    tools.register(WebSearchTool(web_search))
+    if meme_store is not None:
+        tools.register(GetHotTrendsTool(meme_store))
+        tools.register(SearchMemeTool(meme_store, web_search))
     tools.register(HttpApiTool())
     tools.register(MuteUserTool(superusers))
     tools.register(SetTitleTool(superusers))
@@ -160,8 +204,9 @@ async def _init() -> None:
     identity = _identity_mgr.resolve()
     prompt_builder = PromptBuilder(
         instruction=instruction,
-        admins=bot_config.admins,
+        admins={**bot_config.admins, **{uid: "管理员" for uid in superusers if uid not in bot_config.admins}},
         sticker_store=_sticker_store,
+        meme_store=meme_store,
     )
     prompt_builder.build_static(identity, bot_self_id="")
 
@@ -224,12 +269,28 @@ async def _init() -> None:
         always_describe_images=bot_config.vision.describe_mode == "always",
         reply_on_sticker=bot_config.sticker.enabled and bot_config.sticker.reply_on_receive,
     )
+    _meme_radar = None
+    if meme_store is not None:
+        provider = UapiTrendProvider(bot_config.meme.hotboard_url)
+        _meme_radar = MemeRadar(
+            meme_store,
+            provider,
+            platforms=bot_config.meme.platforms,
+            refresh_minutes=bot_config.meme.refresh_minutes,
+            per_platform_limit=bot_config.meme.per_platform_limit,
+            on_change=prompt_builder.invalidate,
+        )
+        _meme_radar.start()
 
 
 @driver.on_shutdown
 async def _shutdown() -> None:
     if _dream_enabled:
         await _dream.stop()
+    if _meme_radar is not None:
+        await _meme_radar.stop()
+    if _search_service is not None:
+        await _search_service.close()
     await _llm.close()
     await _scheduler.close()
     await _message_log.close()
@@ -348,6 +409,7 @@ async def _render_message(
     """
     ordered_parts: list[str | ImageRefBlock | asyncio.Task[ImageRefBlock | None]] = []
     image_count = 0
+    image_tasks: list[asyncio.Task[ImageRefBlock | None]] = []
 
     # 引用回复 → «回复 昵称(QQ号): 原文摘要»
     if reply is not None:
@@ -363,8 +425,27 @@ async def _render_message(
                 original = original[:cap] + "…"
             label = "回复 我" if is_reply_to_bot else f"回复 {nick}({uid})"
             ordered_parts.append(f"«{label}: {original}» ")
-
-    image_tasks: list[asyncio.Task[ImageRefBlock | None]] = []
+            for reply_seg in reply_msg:
+                if reply_seg.type != "image" or session is None:
+                    continue
+                if image_count >= _max_images_per_message:
+                    break
+                url = reply_seg.data.get("url", "")
+                file_id = reply_seg.data.get("file", "")
+                if not url or not file_id:
+                    continue
+                file_id = file_id.split(".")[0] if "." in file_id else file_id
+                is_sticker_segment = str(
+                    reply_seg.data.get("subType", reply_seg.data.get("sub_type", "0"))
+                ) == "1"
+                task = asyncio.ensure_future(
+                    _image_cache.save(
+                        session, url=url, file_id=file_id, preserve_original=is_sticker_segment,
+                    )
+                )
+                image_tasks.append(task)
+                ordered_parts.append(task)
+                image_count += 1
 
     for seg in msg:
         if seg.type == "text":
@@ -382,7 +463,10 @@ async def _render_message(
                 ordered_parts.append(face_to_text(int(face_id)))
             except (ValueError, TypeError):
                 ordered_parts.append("«表情»")
-        elif seg.type == "image" and _vision_enabled and session is not None:
+        elif seg.type == "image" and session is not None and (
+            _vision_enabled
+            or str(seg.data.get("subType", seg.data.get("sub_type", "0"))) == "1"
+        ):
             if image_count >= _max_images_per_message:
                 ordered_parts.append("«图片»")
                 continue
@@ -390,7 +474,12 @@ async def _render_message(
             file_id = seg.data.get("file", "")
             if url and file_id:
                 file_id = file_id.split(".")[0] if "." in file_id else file_id
-                task = asyncio.ensure_future(_image_cache.save(session, url=url, file_id=file_id))
+                is_sticker_segment = str(seg.data.get("subType", seg.data.get("sub_type", "0"))) == "1"
+                task = asyncio.ensure_future(
+                    _image_cache.save(
+                        session, url=url, file_id=file_id, preserve_original=is_sticker_segment,
+                    )
+                )
                 image_tasks.append(task)
                 ordered_parts.append(task)
                 image_count += 1
@@ -412,19 +501,21 @@ async def _render_message(
                 resolved_parts.append("«图片»" if isinstance(result, BaseException) or result is None else result)
             else:
                 resolved_parts.append(part)
-        ordered_parts = resolved_parts
+        final_parts = resolved_parts
         elapsed_ms = (time.perf_counter() - t0) * 1000
         logger.debug(
             "render_message images | tasks={} ok={} elapsed={:.0f}ms",
-            len(image_tasks), sum(isinstance(p, dict) for p in ordered_parts), elapsed_ms,
+            len(image_tasks), sum(isinstance(p, dict) for p in final_parts), elapsed_ms,
         )
+    else:
+        final_parts = [part for part in ordered_parts if not isinstance(part, asyncio.Task)]
 
-    if not any(isinstance(part, dict) for part in ordered_parts):
-        return "".join(part for part in ordered_parts if isinstance(part, str)).strip()
+    if not any(isinstance(part, dict) for part in final_parts):
+        return "".join(part for part in final_parts if isinstance(part, str)).strip()
 
     blocks: list[ContentBlock] = []
     text_buffer: list[str] = []
-    for part in ordered_parts:
+    for part in final_parts:
         if isinstance(part, str):
             text_buffer.append(part)
             continue
@@ -484,6 +575,7 @@ async def collect_group_context(bot: Bot, event: GroupMessageEvent) -> None:
         and str(seg.data.get("subType", seg.data.get("sub_type", "0"))) == "1"
         for seg in event.get_message()
     )
+    await _auto_collect_stickers(bot, content, is_sticker, str(event.group_id))
     reply_sender = getattr(event.reply, "sender", None) if event.reply is not None else None
     reply_user_id = str(getattr(reply_sender, "user_id", "") or "")
     _scheduler.notify(
@@ -494,6 +586,54 @@ async def collect_group_context(bot: Bot, event: GroupMessageEvent) -> None:
         user_id=str(event.user_id),
         message_id=event.message_id,
     )
+
+
+async def _auto_collect_stickers(bot: Bot, content: Content, is_sticker: bool, group_id: str) -> None:
+    """Use vision metadata to collect incoming QQ stickers without model/tool permissions."""
+    if not _sticker_auto_collect or _sticker_store is None or _vision_client is None:
+        return
+    if _sticker_auto_collect_only_stickers and not is_sticker:
+        return
+    now = time.monotonic()
+    if now - _sticker_collect_last.get(group_id, 0.0) < _sticker_auto_collect_cooldown:
+        return
+    blocks = content if isinstance(content, list) else []
+    image_blocks = [b for b in blocks if isinstance(b, dict) and b.get("type") == "image_ref"]
+    if not image_blocks or len(_sticker_store.list_all()) >= _sticker_store.max_count:
+        return
+    _sticker_collect_last[group_id] = now
+    for block in image_blocks:
+        preview = block.get("path", "")
+        original = block.get("original_path", preview)
+        if not preview or not original:
+            continue
+        try:
+            pair = await _vision_client.describe_sticker(preview, block.get("media_type", "image/jpeg"))
+            if not pair:
+                continue
+            description, usage_hint = pair
+            data = Path(original).read_bytes()
+            sticker_id, is_new = _sticker_store.add(data, description, usage_hint, source="auto")
+            if is_new:
+                logger.info("auto sticker collected | group={} id={} description={}", group_id, sticker_id, description)
+                path = _sticker_store.resolve_path(sticker_id)
+                if path:
+                    ctx = ToolContext(bot=bot, user_id="", group_id=group_id)
+                    if await _deliver_sticker(ctx, path):
+                        _sticker_store.record_send(sticker_id)
+                        try:
+                            await bot.send_group_msg(
+                                group_id=int(group_id),
+                                message=(
+                                    f"已收录 {sticker_id}：{description}；"
+                                    f"适合在{usage_hint}时使用。有不对的地方告诉我改。"
+                                ),
+                            )
+                        except Exception:
+                            logger.warning("auto sticker description send failed | id={}", sticker_id, exc_info=True)
+            break
+        except (OSError, ValueError):
+            logger.debug("auto sticker collect skipped", exc_info=True)
 
 
 # ── 群禁言监听 ──
@@ -537,7 +677,12 @@ async def handle_private_chat(bot: Bot, event: MessageEvent) -> None:
     identity = _identity_mgr.resolve()
     ctx = ToolContext(bot=bot, user_id=str(event.user_id), group_id=None, session_id=sid)
 
+    sent_segments: set[str] = set()
+
     async def send_segment(text: str) -> None:
+        if not text or text in sent_segments:
+            return
+        sent_segments.add(text)
         await bot.send(event, Message(text))
 
     reply: str | None = None
@@ -569,5 +714,5 @@ async def handle_private_chat(bot: Bot, event: MessageEvent) -> None:
             reply = "出错了，请稍后再试"
             break
 
-    if reply:
+    if reply and reply not in sent_segments:
         await private_chat.finish(Message(reply))

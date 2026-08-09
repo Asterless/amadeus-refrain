@@ -43,7 +43,24 @@ def test_load_defaults_without_file(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert cfg.group.debounce_seconds == 5.0
     assert cfg.group.batch_size == 10
     assert cfg.napcat.api_url == "http://localhost:29300"
+    assert cfg.search.openai_enabled is False
+    assert cfg.search.openai_base_url == "https://api.openai.com/v1"
     assert cfg.admins == {}
+
+
+def test_openai_search_env_overrides(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SEARCH_OPENAI_ENABLED", "true")
+    monkeypatch.setenv("SEARCH_OPENAI_BASE_URL", "https://search.example/v1")
+    monkeypatch.setenv("SEARCH_OPENAI_API_KEY", "sk-search")
+    monkeypatch.setenv("SEARCH_OPENAI_MODEL", "search-model")
+
+    cfg = load_config(config_path=None)
+
+    assert cfg.search.openai_enabled is True
+    assert cfg.search.openai_base_url == "https://search.example/v1"
+    assert cfg.search.openai_api_key == "sk-search"
+    assert cfg.search.openai_model == "search-model"
 
 
 def test_load_from_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -260,6 +277,14 @@ def test_compact_config_defaults():
     assert c.compress_ratio == 0.5
     assert c.max_failures == 3
     assert c.cache_hit_warn == 90.0
+
+
+def test_meme_config_defaults() -> None:
+    cfg = BotConfig().meme
+    assert cfg.enabled is True
+    assert cfg.refresh_minutes == 15
+    assert "weibo" in cfg.platforms
+    assert cfg.storage_file == "storage/memes.json"
 
 
 def test_compact_config_rejects_invalid_ratio():

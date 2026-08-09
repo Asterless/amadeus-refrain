@@ -2,7 +2,7 @@
 
 from typing import Literal, Self
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 
 class ContextConfig(BaseModel):
@@ -156,6 +156,29 @@ class DreamConfig(BaseModel):
     max_rounds: int = 15
 
 
+class MemeConfig(BaseModel):
+    """Realtime trend discovery and meme verification."""
+
+    enabled: bool = True
+    hotboard_url: str = "https://uapis.cn/api/v1/misc/hotboard"
+    platforms: list[str] = ["weibo", "bilibili", "douyin", "xiaohongshu", "zhihu", "baidu"]
+    refresh_minutes: int = Field(default=15, ge=1)
+    per_platform_limit: int = Field(default=30, ge=1, le=50)
+    storage_file: str = "storage/memes.json"
+    active_hours: int = Field(default=72, ge=1)
+    max_entries: int = Field(default=500, ge=20)
+    max_prompt_entries: int = Field(default=12, ge=1, le=30)
+
+
+class SearchConfig(BaseModel):
+    """Optional OpenAI native web search augmentation."""
+
+    openai_enabled: bool = False
+    openai_base_url: str = "https://api.openai.com/v1"
+    openai_api_key: str = ""
+    openai_model: str = "gpt-5-mini"
+
+
 class VisionConfig(BaseModel):
     """多模态视觉配置。"""
 
@@ -180,6 +203,9 @@ class StickerConfig(BaseModel):
     reply_on_receive: bool = False
     storage_dir: str = "storage/stickers"
     max_count: int = 200
+    auto_collect: bool = True
+    auto_collect_only_stickers: bool = True
+    auto_collect_cooldown_seconds: int = 8
 
 
 class BotConfig(BaseModel):
@@ -190,6 +216,8 @@ class BotConfig(BaseModel):
     memo: MemoConfig = MemoConfig()
     compact: CompactConfig = CompactConfig()
     dream: DreamConfig = DreamConfig()
+    meme: MemeConfig = MemeConfig()
+    search: SearchConfig = SearchConfig()
     soul: SoulConfig = SoulConfig()
     group: GroupConfig = GroupConfig()
     napcat: NapcatConfig = NapcatConfig()
