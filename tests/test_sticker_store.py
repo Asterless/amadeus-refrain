@@ -191,14 +191,17 @@ def test_add_two_different_images_are_distinct(store: StickerStore) -> None:
 # ------------------------------------------------------------------
 
 
-def test_add_gif_rejected(store: StickerStore) -> None:
-    with pytest.raises(ValueError, match="GIF"):
-        store.add(_GIF_DATA, "gif", "hint")
+def test_add_gif(store: StickerStore) -> None:
+    sticker_id, is_new = store.add(_GIF_DATA, "gif", "hint")
+    assert is_new is True
+    assert sticker_id.endswith(__import__("hashlib").sha256(_GIF_DATA).hexdigest()[:8])
+    assert store.resolve_path(sticker_id).suffix == ".gif"  # type: ignore[union-attr]
 
 
-def test_add_gif87_rejected(store: StickerStore) -> None:
-    with pytest.raises(ValueError, match="GIF"):
-        store.add(_GIF87_DATA, "gif87", "hint")
+def test_add_gif87(store: StickerStore) -> None:
+    sticker_id, is_new = store.add(_GIF87_DATA, "gif87", "hint")
+    assert is_new is True
+    assert sticker_id.endswith(__import__("hashlib").sha256(_GIF87_DATA).hexdigest()[:8])
 
 
 def test_add_unknown_format_rejected(store: StickerStore) -> None:
@@ -380,8 +383,8 @@ def test_format_prompt_view_multiple(store: StickerStore) -> None:
     store.add(_PNG_DATA, "PNG贴", "悲伤时", source="auto")
     view = store.format_prompt_view()
     lines = view.splitlines()
-    # header + 2 entries
-    assert len(lines) == 3
+    # header + usage guidance + 2 entries
+    assert len(lines) == 4
 
 
 # ------------------------------------------------------------------

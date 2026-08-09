@@ -22,20 +22,18 @@ _INDEX_FILE = "index.json"
 def _detect_format(data: bytes) -> str:
     """Detect image format from magic bytes.
 
-    Returns the file extension (without dot): 'jpg', 'png', 'webp'.
-    Raises ValueError for GIF or unknown formats.
+    Returns the file extension (without dot): 'jpg', 'png', 'webp', or 'gif'.
     """
     header = data[:6]
 
-    # Reject GIF unconditionally
     if header[:6] in (_MAGIC_GIF87, _MAGIC_GIF89):
-        raise ValueError("GIF format is not supported for stickers")
+        return "gif"
 
     if data[:3] == _MAGIC_JPEG:
         return "jpg"
     if data[:4] == _MAGIC_PNG:
         return "png"
-    if data[:4] == _MAGIC_WEBP_RIFF:
+    if data[:4] == _MAGIC_WEBP_RIFF and data[8:12] == b"WEBP":
         return "webp"
 
     raise ValueError(f"Unknown or unsupported image format (header: {data[:8].hex()})")
@@ -197,7 +195,7 @@ class StickerStore:
     ) -> tuple[str, bool]:
         """Add a sticker to the store.
 
-        Rejects GIFs and unknown formats.
+        Accepts GIF animations and common static image formats; rejects unknown formats.
         Deduplicates by content hash.
 
         Returns:
