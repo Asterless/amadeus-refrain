@@ -205,17 +205,7 @@ class GroupTimeline:
                 msg["message_id"] = message_id
             state.pending.append(msg)
         else:
-            # Flush pending user messages into a merged user turn
-            now = time.time()
-            if state.pending:
-                user_content = _merge_user_contents(state.pending)
-                state.turns.append({"role": "user", "content": user_content})
-                state.turn_times.append(now)
-                state.pending.clear()
-
-            # Append assistant turn
-            state.turns.append({"role": "assistant", "content": content})
-            state.turn_times.append(now)
+            self._append_assistant(state, content, pending_count=None)
 
         # Fire-and-forget SQLite write
         if self._message_log:
@@ -227,6 +217,32 @@ class GroupTimeline:
                 content_json=self._content_to_json(content),
                 message_id=message_id,
             ))
+
+    def commit_assistant(self, group_id: str, content: Content, *, pending_count: int) -> None:
+        """Append a reply and consume only the pending messages visible to that request."""
+        state = self._get_or_create(group_id)
+        self._append_assistant(state, content, pending_count=max(0, pending_count))
+        if self._message_log:
+            asyncio.create_task(self._message_log.record(  # noqa: RUF006
+                group_id=group_id,
+                role="assistant",
+                speaker=None,
+                content_text=self._content_to_text(content),
+                content_json=self._content_to_json(content),
+                message_id=None,
+            ))
+
+    @staticmethod
+    def _append_assistant(state: _GroupState, content: Content, pending_count: int | None) -> None:
+        now = time.time()
+        count = len(state.pending) if pending_count is None else min(pending_count, len(state.pending))
+        consumed = state.pending[:count]
+        if consumed:
+            state.turns.append({"role": "user", "content": _merge_user_contents(consumed)})
+            state.turn_times.append(now)
+            del state.pending[:count]
+        state.turns.append({"role": "assistant", "content": content})
+        state.turn_times.append(now)
 
     # ------------------------------------------------------------------
     # Read accessors
@@ -243,6 +259,16 @@ class GroupTimeline:
         if group_id not in self._store:
             return []
         return list(self._store[group_id].pending)
+
+    def pending_count_through(self, group_id: str, message_id: int | None) -> int:
+        """Count pending messages through a direct trigger, or all pending if it cannot be located."""
+        pending = self.get_pending(group_id)
+        if message_id is None:
+            return len(pending)
+        for index, message in enumerate(pending):
+            if message.get("message_id") == message_id:
+                return index + 1
+        return len(pending)
 
     def get_turn_time(self, group_id: str, index: int) -> float:
         """Return the timestamp of the turn at the given index."""

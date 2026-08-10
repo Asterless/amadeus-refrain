@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from loguru import logger
@@ -21,29 +22,31 @@ if TYPE_CHECKING:
     from src.llm.client import LLMClient
 
 
+@dataclass(frozen=True)
+class _ChatTrigger:
+    is_direct: bool
+    reason: str
+    user_id: str = ""
+    message_id: int | None = None
+
+
 class _GroupSlot:
     __slots__ = (
-        "actor_id",
         "debounce_task",
+        "direct_queue",
         "fire_at",
         "last_proactive_reply_at",
         "msg_count",
-        "pending_at",
         "proactive_reply_times",
         "running_task",
-        "trigger_message_id",
-        "trigger_reason",
     )
 
     def __init__(self) -> None:
         self.debounce_task: asyncio.Task[None] | None = None
         self.running_task: asyncio.Task[None] | None = None
         self.msg_count: int = 0
-        self.pending_at: bool = False
+        self.direct_queue: list[_ChatTrigger] = []
         self.fire_at: bool = False
-        self.actor_id: str = ""
-        self.trigger_message_id: int | None = None
-        self.trigger_reason: str = ""
         self.last_proactive_reply_at: float = 0.0
         self.proactive_reply_times: list[float] = []
 
@@ -90,11 +93,8 @@ class GroupChatScheduler:
             slot.debounce_task = None
             slot.running_task = None
             slot.msg_count = 0
-            slot.pending_at = False
+            slot.direct_queue.clear()
             slot.fire_at = False
-            slot.actor_id = ""
-            slot.trigger_message_id = None
-            slot.trigger_reason = ""
         logger.info("scheduler | group={} muted, tasks cancelled", group_id)
 
     def unmute(self, group_id: str) -> None:
@@ -124,9 +124,6 @@ class GroupChatScheduler:
             return
         resolved = self._group_config.resolve(int(group_id))
 
-        slot = self._slots.setdefault(group_id, _GroupSlot())
-        slot.msg_count += 1
-
         direct_reason = ""
         if is_at:
             direct_reason = "用户@了你"
@@ -135,21 +132,27 @@ class GroupChatScheduler:
         elif is_sticker and self._reply_on_sticker:
             direct_reason = "用户发送了图片表情，配置要求接话"
 
+        if not direct_reason:
+            identity = self._identity_mgr.resolve()
+            if identity.proactive is None:
+                return
+
+        slot = self._slots.setdefault(group_id, _GroupSlot())
+        slot.msg_count += 1
+
         if direct_reason:
+            trigger = _ChatTrigger(True, direct_reason, user_id, message_id)
             if slot.running_task and not slot.running_task.done():
-                slot.pending_at = True
-                self._set_direct_trigger(slot, direct_reason, user_id, message_id)
-                logger.debug("scheduler | group={} direct queued (task running)", group_id)
+                slot.direct_queue.append(trigger)
+                logger.debug(
+                    "scheduler | group={} direct queued (task running, depth={})",
+                    group_id, len(slot.direct_queue),
+                )
                 return
             if slot.debounce_task and not slot.debounce_task.done():
                 slot.debounce_task.cancel()
-            self._set_direct_trigger(slot, direct_reason, user_id, message_id)
             logger.info("scheduler | group={} direct={} -> fire", group_id, direct_reason)
-            self._fire(group_id)
-            return
-
-        identity = self._identity_mgr.resolve()
-        if identity.proactive is None:
+            self._fire(group_id, trigger)
             return
 
         # at_only mode: only respond to @ messages
@@ -167,8 +170,7 @@ class GroupChatScheduler:
         if slot.msg_count >= resolved.batch_size:
             if self._proactive_allowed(group_id, slot):
                 logger.info("scheduler | group={} batch full ({} msgs) -> fire", group_id, slot.msg_count)
-                self._set_proactive_trigger(slot, "消息数量达到 batch_size")
-                self._fire(group_id)
+                self._fire(group_id, _ChatTrigger(False, "消息数量达到 batch_size"))
             else:
                 slot.msg_count = 0
         else:
@@ -189,8 +191,7 @@ class GroupChatScheduler:
         if slot.running_task and not slot.running_task.done():
             return
         logger.info("scheduler | group={} trigger (startup)", group_id)
-        self._set_proactive_trigger(slot, "启动时检查历史消息")
-        self._fire(group_id)
+        self._fire(group_id, _ChatTrigger(False, "启动时检查历史消息"))
 
     async def close(self) -> None:
         """Cancel all pending tasks on shutdown."""
@@ -215,39 +216,24 @@ class GroupChatScheduler:
             if slot and slot.msg_count > 0:
                 if self._proactive_allowed(group_id, slot):
                     logger.info("scheduler | group={} debounce fired ({} msgs)", group_id, slot.msg_count)
-                    self._set_proactive_trigger(slot, "群聊安静后主动判断是否接话")
-                    self._fire(group_id)
+                    self._fire(group_id, _ChatTrigger(False, "群聊安静后主动判断是否接话"))
                 else:
                     slot.msg_count = 0
         except asyncio.CancelledError:
             pass
 
-    def _fire(self, group_id: str) -> None:
+    def _fire(self, group_id: str, trigger: _ChatTrigger) -> None:
         slot = self._slots.get(group_id)
         if not slot:
             return
-        slot.msg_count = 0
-        slot.running_task = asyncio.create_task(self._do_chat(group_id))
+        pending = self._timeline.get_pending(group_id)
+        consumed = self._timeline.pending_count_through(
+            group_id, trigger.message_id if trigger.is_direct else None,
+        )
+        slot.msg_count = max(0, len(pending) - consumed)
+        slot.fire_at = trigger.is_direct
+        slot.running_task = asyncio.create_task(self._do_chat(group_id, trigger))
         slot.running_task.add_done_callback(lambda _: None)
-
-    @staticmethod
-    def _set_direct_trigger(
-        slot: _GroupSlot,
-        reason: str,
-        user_id: str,
-        message_id: int | None,
-    ) -> None:
-        slot.fire_at = True
-        slot.actor_id = user_id
-        slot.trigger_message_id = message_id
-        slot.trigger_reason = reason
-
-    @staticmethod
-    def _set_proactive_trigger(slot: _GroupSlot, reason: str) -> None:
-        slot.fire_at = False
-        slot.actor_id = ""
-        slot.trigger_message_id = None
-        slot.trigger_reason = reason
 
     def _proactive_allowed(self, group_id: str, slot: _GroupSlot) -> bool:
         resolved = self._group_config.resolve(int(group_id))
@@ -275,8 +261,8 @@ class GroupChatScheduler:
         from nonebot.adapters.onebot.v11.exception import ActionFailed
 
         delay = 2.0
-        max_delay = 60.0
-        while True:
+        max_attempts = 5
+        for attempt in range(1, max_attempts + 1):
             if group_id in self._muted_groups:
                 logger.warning("scheduler | group={} muted, dropping message", group_id)
                 return
@@ -284,19 +270,26 @@ class GroupChatScheduler:
                 await self._bot.send_group_msg(group_id=int(group_id), message=Message(text))
                 return
             except ActionFailed as e:
+                if attempt >= max_attempts:
+                    logger.error(
+                        "scheduler | group={} send abandoned after {} attempts: {}",
+                        group_id, max_attempts, e.info.get("wording") or e.info.get("message", str(e)),
+                    )
+                    return
                 logger.warning(
-                    "scheduler | group={} send failed: {} | retry in {}s",
-                    group_id, e.info.get("wording") or e.info.get("message", str(e)), delay,
+                    "scheduler | group={} send failed ({}/{}): {} | retry in {}s",
+                    group_id, attempt, max_attempts,
+                    e.info.get("wording") or e.info.get("message", str(e)), delay,
                 )
                 await asyncio.sleep(delay)
-                delay = min(delay * 2, max_delay)
+                delay *= 2
 
-    async def _do_chat(self, group_id: str) -> None:
+    async def _do_chat(self, group_id: str, trigger: _ChatTrigger) -> None:
         slot = self._slots.get(group_id)
-        is_direct = bool(slot and slot.fire_at)
-        actor_id = slot.actor_id if slot else ""
-        trigger_message_id = slot.trigger_message_id if slot else None
-        trigger_reason = slot.trigger_reason if slot else ""
+        is_direct = trigger.is_direct
+        actor_id = trigger.user_id
+        trigger_message_id = trigger.message_id
+        trigger_reason = trigger.reason
         describe_images = self._always_describe_images or is_direct
         sent_segments: set[str] = set()
         try:
@@ -328,6 +321,7 @@ class GroupChatScheduler:
                         describe_images=describe_images,
                         response_mode="direct" if is_direct else "proactive",
                         trigger_context=trigger_context,
+                        pending_message_id=trigger_message_id if is_direct else None,
                     )
 
                     if reply and reply not in sent_segments:
@@ -362,14 +356,12 @@ class GroupChatScheduler:
         finally:
             if slot:
                 slot.running_task = None
-                if slot.pending_at:
-                    slot.pending_at = False
-                    self._fire(group_id)
+                if slot.direct_queue:
+                    self._fire(group_id, slot.direct_queue.pop(0))
                 elif slot.msg_count > 0:
                     resolved = self._group_config.resolve(int(group_id))
                     if slot.debounce_task and not slot.debounce_task.done():
                         slot.debounce_task.cancel()
-                    self._set_proactive_trigger(slot, "回复期间收到新消息，等待群聊安静")
                     slot.debounce_task = asyncio.create_task(
                         self._debounce(group_id, resolved.debounce_seconds)
                     )

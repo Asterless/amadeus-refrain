@@ -163,6 +163,71 @@ async def test_group_no_compact_below_ratio(prompt, short_term, tools, timeline,
         assert len(turns) == 9  # 8 existing + 1 assistant reply
 
 
+async def test_group_reply_commits_only_messages_in_request_snapshot(
+    prompt, short_term, tools, timeline,
+) -> None:
+    async for client in _client(prompt, short_term, tools, timeline=timeline):
+        gid = "12345"
+        timeline.add(gid, role="user", content="first", speaker="A(1)", message_id=10)
+        api_started = asyncio.Event()
+        release_api = asyncio.Event()
+
+        async def delayed_result(*args, _started=api_started, _release=release_api, **kwargs):
+            _started.set()
+            await _release.wait()
+            return {**MOCK_RESULT_FULL, "text": "reply to first"}
+
+        with patch("src.llm.client._call_api", new_callable=AsyncMock, side_effect=delayed_result):
+            task = asyncio.create_task(client.chat(
+                session_id="group_12345", user_id="1", user_content="", identity=_IDENTITY,
+                group_id=gid, pending_message_id=10,
+            ))
+            await api_started.wait()
+            timeline.add(gid, role="user", content="arrived later", speaker="B(2)", message_id=11)
+            release_api.set()
+            await task
+
+        turns = timeline.get_turns(gid)
+        assert "first" in str(turns[0]["content"])
+        assert "arrived later" not in str(turns[0]["content"])
+        assert [message["message_id"] for message in timeline.get_pending(gid)] == [11]
+
+
+async def test_private_chat_calls_are_serialized_per_session(prompt, short_term, tools) -> None:
+    async for client in _client(prompt, short_term, tools):
+        first_started = asyncio.Event()
+        release_first = asyncio.Event()
+        call_count = 0
+
+        async def ordered_result(
+            *args, _started=first_started, _release=release_first, **kwargs,
+        ):
+            nonlocal call_count
+            call_count += 1
+            current = call_count
+            if current == 1:
+                _started.set()
+                await _release.wait()
+            return {**MOCK_RESULT_FULL, "text": f"reply {current}"}
+
+        with patch("src.llm.client._call_api", new_callable=AsyncMock, side_effect=ordered_result):
+            first = asyncio.create_task(client.chat(
+                session_id="private_1", user_id="1", user_content="first", identity=_IDENTITY,
+            ))
+            await first_started.wait()
+            second = asyncio.create_task(client.chat(
+                session_id="private_1", user_id="1", user_content="second", identity=_IDENTITY,
+            ))
+            await asyncio.sleep(0.05)
+            assert call_count == 1
+            release_first.set()
+            await asyncio.gather(first, second)
+
+        assert [message["content"] for message in short_term.get("private_1")] == [
+            "first", "reply 1", "second", "reply 2",
+        ]
+
+
 # ---------------------------------------------------------------------------
 # Circuit breaker — private
 # ---------------------------------------------------------------------------
