@@ -15,7 +15,7 @@ from nonebot.adapters.onebot.v11 import (
     Message,
     MessageEvent,
 )
-from nonebot.rule import to_me
+from nonebot.rule import Rule, to_me
 
 from src.config import GroupConfig
 from src.config_loader import load_config
@@ -46,6 +46,7 @@ from src.tools.context import ToolContext
 from src.tools.datetime_tool import DateTimeTool
 from src.tools.group_admin import MuteUserTool, SendGroupMsgTool, SetTitleTool
 from src.tools.http_api import HttpApiTool
+from src.tools.imagegen_tools import EditImageTool, GenerateImageTool
 from src.tools.meme_learning import SaveMemeKnowledgeTool
 from src.tools.meme_tools import GetHotTrendsTool, SearchMemeTool
 from src.tools.memo_tools import RecallMemoTool, UpdateMemoTool
@@ -85,12 +86,51 @@ _vision_enabled: bool = True
 _max_images_per_message: int = 5
 _sticker_store: StickerStore | None = None
 _sticker_sender: SendStickerTool | None = None
+_voice_sender: SendVoiceTool | None = None
+_imagegen_tool: GenerateImageTool | None = None
+_imagegen_edit_tool: EditImageTool | None = None
 _vision_client: VisionClient | None = None
 _sticker_auto_collect: bool = True
 _sticker_auto_collect_only_stickers: bool = True
 _sticker_auto_collect_cooldown: int = 8
 _sticker_collect_last: dict[str, float] = {}
 _startup_triggered: bool = False
+_restart_notice_sent: bool = False
+
+
+def _imagegen_pending_rule(event: MessageEvent) -> bool:
+    """仅当该用户/群存在未过期的生图确认请求时触发确认处理。"""
+    if _imagegen_tool is None:
+        return False
+    text = event.get_message().extract_plain_text().strip()
+    if text.startswith("/"):
+        return False
+    group_id = str(event.group_id) if isinstance(event, GroupMessageEvent) else None
+    reply_message_id = event.reply.message_id if event.reply is not None else None
+    return _imagegen_tool.can_handle_confirmation(
+        str(event.user_id), group_id, text, reply_message_id,
+    )
+
+
+_imagegen_confirm = on_message(
+    priority=0, block=True, rule=Rule(_imagegen_pending_rule),
+)
+
+
+@_imagegen_confirm.handle()
+async def handle_imagegen_confirm(bot: Bot, event: MessageEvent) -> None:
+    if _imagegen_tool is None:
+        return
+    group_id = str(event.group_id) if isinstance(event, GroupMessageEvent) else None
+    text = event.get_message().extract_plain_text().strip()
+    reply_message_id = event.reply.message_id if event.reply is not None else None
+    try:
+        await _imagegen_tool.try_confirm(
+            bot=bot, user_id=str(event.user_id), group_id=group_id, text=text,
+            reply_message_id=reply_message_id,
+        )
+    except Exception:
+        logger.warning("imagegen confirm handling failed", exc_info=True)
 
 
 @driver.on_startup
@@ -99,7 +139,7 @@ async def _init() -> None:
     global _identity_mgr, _usage_tracker, _superusers
     global _message_log, _timeline, _short_term, _allowed_groups, _allowed_private_users, _group_config
     global _image_cache, _vision_enabled, _max_images_per_message, _sticker_store, _vision_client
-    global _sticker_sender
+    global _sticker_sender, _voice_sender, _imagegen_tool, _imagegen_edit_tool
     global _sticker_auto_collect, _sticker_auto_collect_only_stickers, _sticker_auto_collect_cooldown
 
     bot_config = load_config()
@@ -274,6 +314,57 @@ async def _init() -> None:
         )
     else:
         logger.info("[Startup][TTS] enabled=false")
+    if bot_config.imagegen.enabled:
+        imagegen_api_key = bot_config.imagegen.api_key
+        if not imagegen_api_key and "bigmodel.cn" in bot_config.imagegen.base_url:
+            imagegen_api_key = bot_config.vision.api_key
+        _imagegen_tool = GenerateImageTool(
+            base_url=bot_config.imagegen.base_url,
+            api_key=imagegen_api_key,
+            model=bot_config.imagegen.model,
+            size=bot_config.imagegen.size,
+            timeout_seconds=bot_config.imagegen.timeout_seconds,
+            max_prompt_chars=bot_config.imagegen.max_prompt_chars,
+            proxy=bot_config.imagegen.proxy,
+            daily_global_limit=bot_config.imagegen.daily_global_limit,
+            daily_user_limit=bot_config.imagegen.daily_user_limit,
+            daily_group_limit=bot_config.imagegen.daily_group_limit,
+            cooldown_seconds=bot_config.imagegen.cooldown_seconds,
+            usage_file=bot_config.imagegen.usage_file,
+        )
+        _imagegen_edit_tool = EditImageTool(
+            base_url=bot_config.imagegen.base_url,
+            api_key=imagegen_api_key,
+            model=bot_config.imagegen.model,
+            size=bot_config.imagegen.size,
+            timeout_seconds=bot_config.imagegen.timeout_seconds,
+            max_prompt_chars=bot_config.imagegen.max_prompt_chars,
+            proxy=bot_config.imagegen.proxy,
+            daily_global_limit=bot_config.imagegen.daily_global_limit,
+            daily_user_limit=bot_config.imagegen.daily_user_limit,
+            daily_group_limit=bot_config.imagegen.daily_group_limit,
+            cooldown_seconds=bot_config.imagegen.cooldown_seconds,
+            usage_file=bot_config.imagegen.usage_file,
+            usage=_imagegen_tool.usage,
+        )
+        tools.register(
+            _imagegen_tool
+        )
+        tools.register(_imagegen_edit_tool)
+        logger.info(
+            "[Startup][ImageGen] enabled=true model={} size={} proxy={} edit=True "
+            "limits=global:{}/user:{}/group:{} cooldown={}s api_key_set={}",
+            bot_config.imagegen.model,
+            bot_config.imagegen.size,
+            bot_config.imagegen.proxy or "none",
+            bot_config.imagegen.daily_global_limit,
+            bot_config.imagegen.daily_user_limit,
+            bot_config.imagegen.daily_group_limit,
+            bot_config.imagegen.cooldown_seconds,
+            bool(imagegen_api_key),
+        )
+    else:
+        logger.info("[Startup][ImageGen] enabled=false")
     tools.register(HttpApiTool())
     tools.register(MuteUserTool(superusers))
     tools.register(SetTitleTool(superusers))
@@ -284,6 +375,7 @@ async def _init() -> None:
         tools.register(SendStickerTool(_sticker_store, send_probability=bot_config.sticker.send_probability))
         tools.register(ManageStickerTool(_sticker_store, superusers))
     _sticker_sender = tools.get("send_sticker")  # type: ignore[assignment]
+    _voice_sender = tools.get("send_voice")  # type: ignore[assignment]
     logger.info("[Startup][Tools] registered count={} names={}", len(tools.names), ",".join(tools.names))
 
     _identity_mgr = IdentityManager()
@@ -342,6 +434,15 @@ async def _init() -> None:
         vision_client=_vision_client,
         message_log=_message_log,
     )
+    rewrite_model = bot_config.imagegen.prompt_rewrite_model
+
+    async def rewrite_image_prompt(current_prompt: str, revision: str) -> str:
+        return await _llm.rewrite_image_prompt(current_prompt, revision, model=rewrite_model)
+
+    if _imagegen_tool is not None:
+        _imagegen_tool.set_prompt_rewriter(rewrite_image_prompt)
+    if _imagegen_edit_tool is not None:
+        _imagegen_edit_tool.set_prompt_rewriter(rewrite_image_prompt)
     if bot_config.llm.usage.enabled:
         _llm._usage_tracker = _usage_tracker
 
@@ -480,11 +581,28 @@ async def _on_connect(bot: Bot) -> None:
 
     logger.info("Bot 就绪，开始接收消息 ✓")
 
+    global _restart_notice_sent
+    if not _restart_notice_sent:
+        _restart_notice_sent = True
+        await _send_restart_notice(bot)
+
     # Evaluate history for each group — catch up on missed messages (first connect only)
     if is_first_connect:
         for gid in group_ids:
             if _timeline.get_turns(gid) or _timeline.get_pending(gid):
                 _scheduler.trigger(gid)
+
+
+async def _send_restart_notice(bot: Bot) -> None:
+    """进程启动/重启完成后仅私聊通知管理员。"""
+    message = "重启完成，我回来了 ✓"
+    bot_config = load_config()
+    for admin_id in bot_config.admins:
+        try:
+            await bot.send_private_msg(user_id=int(admin_id), message=message)
+        except Exception:
+            logger.warning("failed to send restart notice to admin {}", admin_id)
+    logger.info("restart notice sent | admins={}", len(bot_config.admins))
 
 
 def _session_id(event: MessageEvent) -> str:

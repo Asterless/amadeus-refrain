@@ -183,6 +183,16 @@ class MusicConfig(BaseModel):
     node_executable: str = "node"
 
 
+class ControlConfig(BaseModel):
+    """Host-side control service settings (start/stop TTS API and bot container)."""
+
+    enabled: bool = False
+    base_url: str = "http://host.docker.internal:8765"
+    port: int = Field(default=8765, ge=1, le=65535)
+    token: str = ""
+    timeout_seconds: float = Field(default=120.0, ge=5, le=600)
+
+
 class TTSConfig(BaseModel):
     """Text-to-speech provider settings."""
 
@@ -201,6 +211,27 @@ class TTSConfig(BaseModel):
     media_type: Literal["wav", "ogg", "aac"] = "wav"
     timeout_seconds: float = Field(default=120.0, ge=5, le=600)
     max_chars: int = Field(default=300, ge=1, le=1000)
+
+
+class ImageGenConfig(BaseModel):
+    """Image generation settings (OpenAI-compatible images API, e.g. GPT-image-2 / CogView)."""
+
+    enabled: bool = False
+    base_url: str = "https://api.openai.com/v1"
+    api_key: str = ""  # 接 OpenAI 时必填；base_url 指向智谱时留空可回退 [vision].api_key
+    model: str = "gpt-image-2"
+    size: str = "1280x1280"
+    timeout_seconds: float = Field(default=120.0, ge=10, le=600)
+    max_prompt_chars: int = Field(default=500, ge=10, le=2000)
+    prompt_rewrite_model: str = ""
+    # 国内网络访问 OpenAI 需要代理（与 [tts].proxy 同格式）
+    proxy: str = ""
+    # ---- 限额（0 = 不限制）----
+    daily_global_limit: int = Field(default=20, ge=0)
+    daily_user_limit: int = Field(default=5, ge=0)
+    daily_group_limit: int = Field(default=15, ge=0)
+    cooldown_seconds: float = Field(default=15.0, ge=0)
+    usage_file: str = "storage/imagegen_usage.json"
 
 
 class SearchConfig(BaseModel):
@@ -252,7 +283,9 @@ class BotConfig(BaseModel):
     dream: DreamConfig = DreamConfig()
     meme: MemeConfig = MemeConfig()
     music: MusicConfig = MusicConfig()
+    control: ControlConfig = ControlConfig()
     tts: TTSConfig = TTSConfig()
+    imagegen: ImageGenConfig = ImageGenConfig()
     search: SearchConfig = SearchConfig()
     soul: SoulConfig = SoulConfig()
     group: GroupConfig = GroupConfig()

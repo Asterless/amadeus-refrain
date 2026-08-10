@@ -207,6 +207,9 @@ docker compose up -d
 | `save_sticker` | 把群里看到的图存进表情库 | 需要 `sticker.enabled` |
 | `send_sticker` | 从表情库选一张发出去 | 需要 `sticker.enabled` |
 | `manage_sticker` | 更新表情包描述 / 删除表情包 | 删除仅管理员；需要 `sticker.enabled` |
+| `send_voice` | 把文本合成为语音并发送到当前群 / 私聊 | 需要 `[tts] enabled`，支持 Edge TTS / GPT-SoVITS |
+| `generate_image` | 把描述润色成详细画面描述并与用户确认（回复「确认」后出图）再发送到当前群 / 私聊 | 需要 `[imagegen] enabled`，OpenAI 兼容接口（GPT-image-2 等） |
+| `edit_image` | 基于用户发送的图片按指令生成修改后的新图（先确认修改方案，回复「确认」后出图） | 需要 `[imagegen] enabled` 且用户消息中带图片 |
 | `mute_user` | 禁言群成员（duration=0 解除） | 仅管理员可触发 |
 | `set_title` | 设置 / 清除群专属头衔 | 仅管理员可触发 |
 | `send_group_msg` | 主动向指定群发消息 | 仅管理员可触发 |

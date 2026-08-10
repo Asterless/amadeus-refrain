@@ -193,6 +193,72 @@ blocked_users = []
 api_url = "http://localhost:29300"
 
 # ---------------------------------------------------------------------------
+# 宿主控制服务（管理指令：启停 GPT-SoVITS API / bot 容器）
+# ---------------------------------------------------------------------------
+[control]
+# 总开关
+enabled = false
+# bot 容器访问宿主控制服务的地址
+base_url = "http://host.docker.internal:8765"
+# 控制服务监听端口（与 scripts/control_server.py 一致）
+port = 8765
+# 鉴权 token，必须与宿主上 scripts/control_server.py 使用的 config.toml 相同
+token = ""
+timeout_seconds = 120.0
+
+# ---------------------------------------------------------------------------
+# 语音合成（TTS）
+# ---------------------------------------------------------------------------
+[tts]
+# 总开关
+enabled = false
+# provider = "edge" | "gpt_sovits"
+provider = "edge"
+# Edge TTS 音色/语速/音量/代理（仅 provider=edge 生效）
+voice = "zh-CN-XiaoxiaoNeural"
+rate = "+0%"
+volume = "+0%"
+proxy = ""
+# GPT-SoVITS API 地址与参考音频
+base_url = "http://127.0.0.1:9880"
+ref_audio_path = ""
+prompt_text = ""
+prompt_lang = "zh"
+text_lang = "zh"
+text_split_method = "cut5"
+media_type = "wav"
+timeout_seconds = 120.0
+max_chars = 300
+
+# ---------------------------------------------------------------------------
+# 图片生成（OpenAI 兼容 images/generations 接口：GPT-image-2 等）
+# ---------------------------------------------------------------------------
+[imagegen]
+# 总开关
+enabled = false
+# OpenAI 兼容接口地址（米醋中转 New API）
+base_url = "https://www.micuapi.ai/v1"
+# API key：填米醋 Image2 分组的 token（sk- 开头）；
+# 只有 base_url 指向智谱（bigmodel.cn）时才可留空并回退 [vision].api_key
+api_key = ""
+# 模型：gpt-image-2（1K 档福利价，~30s）；2K/4K 会自动切 gpt-image-2-pro
+model = "gpt-image-2"
+# 尺寸：W/H 需为 8 的倍数，≤2.25MP 走 1K 福利档；如 1024x1024 / 1536x1024 / 2048x2048
+size = "1280x1280"
+timeout_seconds = 120.0
+max_prompt_chars = 500
+# 合并用户后续修改的轻量聊天模型；留空则复用 [llm].model
+prompt_rewrite_model = ""
+# 米醋中转国内直连，无需代理；若换官方 OpenAI 才需要填（与 [tts].proxy 同格式）
+proxy = ""
+# 限额（0 = 不限制），用 /设置 修改后立即生效
+daily_global_limit = 20
+daily_user_limit = 5
+daily_group_limit = 15
+cooldown_seconds = 15.0
+usage_file = "storage/imagegen_usage.json"
+
+# ---------------------------------------------------------------------------
 # 多模态视觉（图片理解）
 # ---------------------------------------------------------------------------
 [vision]
