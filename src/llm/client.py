@@ -34,6 +34,12 @@ _RATE_LIMIT_BASE_DELAY = 5.0  # seconds
 _SEGMENT_SEP = "---cut---"
 _SEGMENT_DELAY = 0.5  # seconds between segment sends
 _BLANK_LINE_RE = re.compile(r"\n{2,}")
+_MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^)]+)\)")
+_MARKDOWN_CODE_RE = re.compile(r"```(?:[A-Za-z0-9_+-]+)?\n?(.*?)```", re.DOTALL)
+_MARKDOWN_DECORATION_RE = re.compile(
+    r"(^|\n)\s{0,3}#{1,6}\s+|(^|\n)\s*[-*+]\s+|~~|\*\*|__|`|"
+    r"(?<!\*)\*(?!\*)|(?<!_)_(?!_)"
+)
 _CQ_CODE_RE = re.compile(r"\[CQ:[^\]]+\]")
 _CQ_KV_FIX_RE = re.compile(r",(\w+):")
 _CQ_AT_BOUNDARY_RE = re.compile(r"(?=\[CQ:at(?:,|\]))")
@@ -66,6 +72,14 @@ def _clean_text(text: str) -> str:
     return _BLANK_LINE_RE.sub("\n", text).strip()
 
 
+def _strip_markdown(text: str) -> str:
+    """Convert common Markdown emitted by the model into QQ-friendly plain text."""
+    text = _MARKDOWN_CODE_RE.sub(r"\1", text)
+    text = _MARKDOWN_LINK_RE.sub(r"\1 (\2)", text)
+    text = _MARKDOWN_DECORATION_RE.sub(lambda match: match.group(1) or "", text)
+    return _clean_text(text)
+
+
 def _fix_cq_codes(text: str) -> str:
     """Normalize CQ code params: [CQ:reply,id:123] → [CQ:reply,id=123]."""
     return _CQ_CODE_RE.sub(lambda m: _CQ_KV_FIX_RE.sub(r",\1=", m.group(0)), text)
@@ -73,7 +87,7 @@ def _fix_cq_codes(text: str) -> str:
 
 def _split_segments(text: str) -> list[str]:
     """Split reply by explicit separators and separate per-person @ replies."""
-    text = _fix_cq_codes(text)
+    text = _strip_markdown(_fix_cq_codes(text))
     segments: list[str] = []
     current: list[str] = []
     for line in text.split("\n"):

@@ -56,6 +56,7 @@ from src.tools.music_tools import (
     MusicShareTool,
 )
 from src.tools.sticker_tools import ManageStickerTool, SaveStickerTool, SendStickerTool, _deliver_sticker
+from src.tools.voice_tools import SendVoiceTool
 from src.tools.web_fetch import WebFetchTool
 from src.tools.web_search import HybridWebSearch, OpenAIWebSearchClient, WebSearchTool
 from src.vision import VisionClient
@@ -83,6 +84,7 @@ _image_cache: ImageCache
 _vision_enabled: bool = True
 _max_images_per_message: int = 5
 _sticker_store: StickerStore | None = None
+_sticker_sender: SendStickerTool | None = None
 _vision_client: VisionClient | None = None
 _sticker_auto_collect: bool = True
 _sticker_auto_collect_only_stickers: bool = True
@@ -97,6 +99,7 @@ async def _init() -> None:
     global _identity_mgr, _usage_tracker, _superusers
     global _message_log, _timeline, _short_term, _allowed_groups, _allowed_private_users, _group_config
     global _image_cache, _vision_enabled, _max_images_per_message, _sticker_store, _vision_client
+    global _sticker_sender
     global _sticker_auto_collect, _sticker_auto_collect_only_stickers, _sticker_auto_collect_cooldown
 
     bot_config = load_config()
@@ -246,6 +249,31 @@ async def _init() -> None:
         tools.register(MusicShareTool(_music_client))
         tools.register(MusicQrLoginTool(_music_client, superusers))
         tools.register(MusicLoginStatusTool(_music_client, superusers))
+    if bot_config.tts.enabled:
+        tools.register(
+            SendVoiceTool(
+                provider=bot_config.tts.provider,
+                voice=bot_config.tts.voice,
+                rate=bot_config.tts.rate,
+                volume=bot_config.tts.volume,
+                proxy=bot_config.tts.proxy,
+                base_url=bot_config.tts.base_url,
+                ref_audio_path=bot_config.tts.ref_audio_path,
+                prompt_text=bot_config.tts.prompt_text,
+                prompt_lang=bot_config.tts.prompt_lang,
+                text_lang=bot_config.tts.text_lang,
+                text_split_method=bot_config.tts.text_split_method,
+                media_type=bot_config.tts.media_type,
+                timeout_seconds=bot_config.tts.timeout_seconds,
+                max_chars=bot_config.tts.max_chars,
+            )
+        )
+        logger.info(
+            "[Startup][TTS] enabled=true provider={} voice={} max_chars={}",
+            bot_config.tts.provider, bot_config.tts.voice, bot_config.tts.max_chars,
+        )
+    else:
+        logger.info("[Startup][TTS] enabled=false")
     tools.register(HttpApiTool())
     tools.register(MuteUserTool(superusers))
     tools.register(SetTitleTool(superusers))
@@ -255,6 +283,7 @@ async def _init() -> None:
         # The model must first choose a relevant sticker; config controls the final send gate.
         tools.register(SendStickerTool(_sticker_store, send_probability=bot_config.sticker.send_probability))
         tools.register(ManageStickerTool(_sticker_store, superusers))
+    _sticker_sender = tools.get("send_sticker")  # type: ignore[assignment]
     logger.info("[Startup][Tools] registered count={} names={}", len(tools.names), ",".join(tools.names))
 
     _identity_mgr = IdentityManager()
@@ -331,6 +360,7 @@ async def _init() -> None:
         group_config=bot_config.group,
         always_describe_images=bot_config.vision.describe_mode == "always",
         reply_on_sticker=bot_config.sticker.enabled and bot_config.sticker.reply_on_receive,
+        auto_sticker_sender=_sticker_sender,
     )
     _meme_radar = None
     if meme_store is not None:
@@ -797,5 +827,7 @@ async def handle_private_chat(bot: Bot, event: MessageEvent) -> None:
             reply = "出错了，请稍后再试"
             break
 
+    if reply and _sticker_sender is not None and not ctx.extra.get("sticker_sent"):
+        await _sticker_sender.execute_random(ctx)
     if reply and reply not in sent_segments:
         await private_chat.finish(Message(reply))

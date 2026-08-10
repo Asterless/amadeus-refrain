@@ -12,6 +12,7 @@ storage/*.db
 storage/image_cache/
 storage/stickers/
 storage/memes.json
+storage/netease_cookie.json
 !storage/.gitkeep
 !storage/memories/.example.qmd
 napcat/data/

@@ -12,6 +12,7 @@ from src.config import GroupConfig
 from src.llm.client import _RATE_LIMIT_BASE_DELAY, _RATE_LIMIT_MAX_RETRIES, RateLimitError
 from src.memory.group_timeline import GroupTimeline
 from src.tools.context import ToolContext
+from src.tools.sticker_tools import SendStickerTool
 
 if TYPE_CHECKING:
     from nonebot.adapters.onebot.v11 import Bot
@@ -58,6 +59,7 @@ class GroupChatScheduler:
         group_config: GroupConfig,
         always_describe_images: bool = False,
         reply_on_sticker: bool = False,
+        auto_sticker_sender: SendStickerTool | None = None,
     ) -> None:
         self._llm = llm
         self._timeline = timeline
@@ -65,6 +67,7 @@ class GroupChatScheduler:
         self._group_config = group_config
         self._always_describe_images = always_describe_images
         self._reply_on_sticker = reply_on_sticker
+        self._auto_sticker_sender = auto_sticker_sender
         self._slots: dict[str, _GroupSlot] = {}
         self._bot: Bot | None = None
         self._muted_groups: set[str] = set()
@@ -334,6 +337,8 @@ class GroupChatScheduler:
                             now = time.monotonic()
                             slot.last_proactive_reply_at = now
                             slot.proactive_reply_times.append(now)
+                    if reply and self._auto_sticker_sender and not ctx.extra.get("sticker_sent"):
+                        await self._auto_sticker_sender.execute_random(ctx)
                     return
 
                 except RateLimitError:

@@ -1,5 +1,6 @@
 """Sticker tools: save, send, and manage stickers in the library."""
 
+import random
 import time
 from pathlib import Path
 from typing import Any
@@ -218,9 +219,10 @@ class ManageStickerTool(Tool):
 class SendStickerTool(Tool):
     """Send a sticker from the library as a standalone image message."""
 
-    def __init__(self, store: StickerStore) -> None:
+    def __init__(self, store: StickerStore, *, send_probability: float = 1.0) -> None:
         self._store = store
         self._last_sent: dict[str, float] = {}
+        self._send_probability = min(max(send_probability, 0.0), 1.0)
 
     @property
     def name(self) -> str:
@@ -252,14 +254,24 @@ class SendStickerTool(Tool):
             return "表情包发送太频繁，请稍后再试"
 
         if not ctx.bot:
+            logger.warning("sticker send skipped | reason=no_bot id={}", sticker_id)
             return "Bot 不可用"
+
+        if random.random() >= self._send_probability:
+            logger.info(
+                "sticker send skipped | reason=probability_miss id={} probability={:.0%}",
+                sticker_id, self._send_probability,
+            )
+            return "本轮表情包概率未命中，不发送"
 
         file_path = self._store.resolve_path(sticker_id)
         if file_path is None:
+            logger.warning("sticker send skipped | reason=not_found id={}", sticker_id)
             return f"表情包不存在: {sticker_id}"
 
         try:
             if not await _deliver_sticker(ctx, file_path):
+                logger.warning("sticker send failed | reason=delivery id={} path={}", sticker_id, file_path)
                 return f"发送失败: {sticker_id}"
         except Exception as e:
             logger.error("send_sticker failed for {}: {}", sticker_id, e)
@@ -270,3 +282,14 @@ class SendStickerTool(Tool):
             self._last_sent[cooldown_key] = now
         logger.info("[send_sticker ok] id={}", sticker_id)
         return f"已发送 {sticker_id}"
+
+    async def execute_random(self, ctx: ToolContext) -> str:
+        """Attempt the configured automatic send using a random library entry."""
+        entries = self._store.list_all()
+        if not entries:
+            logger.info("sticker auto-send skipped | reason=empty_library")
+            return "当前表情包库为空"
+        sticker_id = random.choice(tuple(entries))
+        result = await self.execute(ctx, sticker_id=sticker_id)
+        logger.info("sticker auto-send | id={} result={!r}", sticker_id, result[:120])
+        return result

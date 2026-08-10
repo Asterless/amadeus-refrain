@@ -183,6 +183,26 @@ class MusicConfig(BaseModel):
     node_executable: str = "node"
 
 
+class TTSConfig(BaseModel):
+    """Text-to-speech provider settings."""
+
+    enabled: bool = True
+    provider: Literal["edge", "gpt_sovits"] = "edge"
+    voice: str = "zh-CN-XiaoxiaoNeural"
+    rate: str = "+0%"
+    volume: str = "+0%"
+    proxy: str = ""
+    base_url: str = "http://host.docker.internal:9880"
+    ref_audio_path: str = ""
+    prompt_text: str = ""
+    prompt_lang: str = "zh"
+    text_lang: str = "zh"
+    text_split_method: str = "cut5"
+    media_type: Literal["wav", "ogg", "aac"] = "wav"
+    timeout_seconds: float = Field(default=120.0, ge=5, le=600)
+    max_chars: int = Field(default=300, ge=1, le=1000)
+
+
 class SearchConfig(BaseModel):
     """Optional OpenAI native web search augmentation."""
 
@@ -232,6 +252,7 @@ class BotConfig(BaseModel):
     dream: DreamConfig = DreamConfig()
     meme: MemeConfig = MemeConfig()
     music: MusicConfig = MusicConfig()
+    tts: TTSConfig = TTSConfig()
     search: SearchConfig = SearchConfig()
     soul: SoulConfig = SoulConfig()
     group: GroupConfig = GroupConfig()
