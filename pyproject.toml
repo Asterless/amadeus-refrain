@@ -22,7 +22,7 @@ dependencies = [
 
 [tool.nonebot]
 adapters = [{ name = "OneBot V11", module_name = "nonebot.adapters.onebot.v11" }]
-plugins = ["src.plugins.chat"]
+plugins = ["src.plugins.chat", "src.plugins.control"]
 
 [tool.ruff]
 target-version = "py312"
