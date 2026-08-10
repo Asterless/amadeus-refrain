@@ -1,7 +1,7 @@
 """Realtime trend discovery and meme context storage."""
 
-from src.meme.radar import MemeRadar, UapiTrendProvider
 from src.meme.knowledge import MemeKnowledge, MemeKnowledgeStore
+from src.meme.radar import MemeRadar, UapiTrendProvider
 from src.meme.store import MemeStore, TrendItem
 
 __all__ = [
