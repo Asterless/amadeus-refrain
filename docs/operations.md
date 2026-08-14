@@ -30,6 +30,8 @@ The bot image uses a two-stage Docker build. `GIT_COMMIT` build arg is baked in 
 3. Tags image as `qq-bot:{version}` and `qq-bot:latest`
 4. Runs `docker compose up bot -d`
 
+This script only targets the bot service. For a full first-time deployment, see [docs/deployment.md](docs/deployment.md). NapCat should already be running or started separately with `docker compose up -d`.
+
 ## Storage Layout
 
 ```
