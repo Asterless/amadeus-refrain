@@ -93,7 +93,7 @@ class TestAtHandling:
     async def test_at_works_without_proactive_identity(self) -> None:
         llm = _FakeLLM(reply=None)
         scheduler = GroupChatScheduler(
-            llm=llm, timeline=GroupTimeline(),
+            llm=llm, timeline=GroupTimeline(),  # type: ignore[arg-type]
             identity_mgr=_FakeIdentityMgr(_make_identity(proactive=None)),  # type: ignore[arg-type]
             group_config=GroupConfig(debounce_seconds=999, batch_size=100),
         )
@@ -133,7 +133,7 @@ class TestAtHandling:
         await scheduler.close()
 
     async def test_at_queues_when_busy(self) -> None:
-        """notify(is_at=True) sets pending_at when a task is already running."""
+        """notify(is_at=True) preserves the direct trigger while a task is running."""
         llm = _FakeLLM(reply=None, delay=0.5)
         scheduler = GroupChatScheduler(
             llm=llm, timeline=GroupTimeline(), identity_mgr=_FakeIdentityMgr(_make_identity()),  # type: ignore[arg-type]
@@ -142,12 +142,15 @@ class TestAtHandling:
         scheduler.notify("111")  # debounce
         await asyncio.sleep(0.15)  # fires, running_task active
         assert len(llm.calls) == 1
-        scheduler.notify("111", is_at=True)  # should queue
-        assert scheduler._slots["111"].pending_at is True
+        scheduler.notify("111", is_at=True, user_id="42", message_id=7)
+        queue = scheduler._slots["111"].direct_queue
+        assert len(queue) == 1
+        assert queue[0].user_id == "42"
+        assert queue[0].message_id == 7
         await scheduler.close()
 
-    async def test_pending_at_fires_after_completion(self) -> None:
-        """After running task completes, pending_at triggers a new call."""
+    async def test_queued_direct_fires_after_completion(self) -> None:
+        """After a running task completes, the queued direct trigger keeps its metadata."""
         llm = _FakeLLM(reply=None, delay=0.2)
         scheduler = GroupChatScheduler(
             llm=llm, timeline=GroupTimeline(), identity_mgr=_FakeIdentityMgr(_make_identity()),  # type: ignore[arg-type]
@@ -156,10 +159,28 @@ class TestAtHandling:
         scheduler.notify("111")
         await asyncio.sleep(0.15)  # first call fires (debounce done, chat starts)
         assert len(llm.calls) == 1
-        scheduler.notify("111", is_at=True)  # queued as pending_at
+        scheduler.notify("111", is_at=True, user_id="42", message_id=7)
         await asyncio.sleep(0.4)  # first call finishes, pending fires
         assert len(llm.calls) == 2
-        assert scheduler._slots["111"].pending_at is False
+        assert llm.calls[1]["user_id"] == "42"
+        assert llm.calls[1]["pending_message_id"] == 7
+        assert scheduler._slots["111"].direct_queue == []
+        await scheduler.close()
+
+    async def test_multiple_direct_triggers_keep_order(self) -> None:
+        timeline = GroupTimeline()
+        llm = _FakeLLM(reply=None, delay=0.1)
+        scheduler = GroupChatScheduler(
+            llm=llm, timeline=timeline, identity_mgr=_FakeIdentityMgr(_make_identity()),  # type: ignore[arg-type]
+            group_config=GroupConfig(debounce_seconds=999, batch_size=100),
+        )
+        for user_id, message_id in (("1", 10), ("2", 11), ("3", 12)):
+            timeline.add("111", role="user", content=f"message {message_id}", message_id=message_id)
+            scheduler.notify("111", is_at=True, user_id=user_id, message_id=message_id)
+
+        await asyncio.sleep(0.45)
+        assert [call["user_id"] for call in llm.calls] == ["1", "2", "3"]
+        assert [call["pending_message_id"] for call in llm.calls] == [10, 11, 12]
         await scheduler.close()
 
 
@@ -375,7 +396,7 @@ class TestMute:
         slot = scheduler._slots["111"]
         assert slot.running_task is None
         assert slot.msg_count == 0
-        assert slot.pending_at is False
+        assert slot.direct_queue == []
         await scheduler.close()
 
     async def test_is_muted(self) -> None:

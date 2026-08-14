@@ -132,6 +132,28 @@ class TestGroupTimelineLifecycle:
         # pending should be empty after flush
         assert len(tl.get_pending("g1")) == 0
 
+    def test_commit_assistant_preserves_messages_arriving_after_snapshot(self, tl: GroupTimeline) -> None:
+        tl.add("g1", role="user", content="first", speaker="Alice(1)", message_id=10)
+        snapshot_count = len(tl.get_pending("g1"))
+        tl.add("g1", role="user", content="arrived later", speaker="Bob(2)", message_id=11)
+
+        tl.commit_assistant("g1", "reply to first", pending_count=snapshot_count)
+
+        turns = tl.get_turns("g1")
+        assert len(turns) == 2
+        assert "first" in str(turns[0]["content"])
+        assert "arrived later" not in str(turns[0]["content"])
+        pending = tl.get_pending("g1")
+        assert [message.get("message_id") for message in pending] == [11]
+
+    def test_pending_count_through_message_id(self, tl: GroupTimeline) -> None:
+        for message_id in (10, 11, 12):
+            tl.add("g1", role="user", content=str(message_id), message_id=message_id)
+
+        assert tl.pending_count_through("g1", 11) == 2
+        assert tl.pending_count_through("g1", None) == 3
+        assert tl.pending_count_through("g1", 999) == 3
+
     # -- add(role="assistant") without pending produces assistant-only turn --
 
     def test_add_assistant_without_pending(self, tl: GroupTimeline) -> None:

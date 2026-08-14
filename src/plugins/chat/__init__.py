@@ -15,7 +15,7 @@ from nonebot.adapters.onebot.v11 import (
     Message,
     MessageEvent,
 )
-from nonebot.rule import to_me
+from nonebot.rule import Rule, to_me
 
 from src.config import GroupConfig
 from src.config_loader import load_config
@@ -31,7 +31,7 @@ from src.llm.dream import DreamAgent, setup_dream_logger
 from src.llm.prompt import PromptBuilder, load_instruction
 from src.llm.scheduler import GroupChatScheduler
 from src.llm.usage import UsageTracker
-from src.meme import MemeLearner, MemeRadar, MemeStore, UapiTrendProvider
+from src.meme import MemeKnowledgeStore, MemeRadar, MemeStore, UapiTrendProvider
 from src.memory.group_timeline import GroupTimeline
 from src.memory.history_loader import load_group_history
 from src.memory.image_cache import ImageCache
@@ -46,12 +46,9 @@ from src.tools.context import ToolContext
 from src.tools.datetime_tool import DateTimeTool
 from src.tools.group_admin import MuteUserTool, SendGroupMsgTool, SetTitleTool
 from src.tools.http_api import HttpApiTool
-from src.tools.meme_tools import (
-    GetHotTrendsTool,
-    RecallGroupMemesTool,
-    SearchMemeTool,
-    TeachMemeTool,
-)
+from src.tools.imagegen_tools import EditImageTool, GenerateImageTool
+from src.tools.meme_learning import SaveMemeKnowledgeTool
+from src.tools.meme_tools import GetHotTrendsTool, SearchMemeTool
 from src.tools.memo_tools import RecallMemoTool, UpdateMemoTool
 from src.tools.music_tools import (
     MusicLoginStatusTool,
@@ -62,7 +59,7 @@ from src.tools.music_tools import (
 from src.tools.sticker_tools import ManageStickerTool, SaveStickerTool, SendStickerTool, _deliver_sticker
 from src.tools.voice_tools import SendVoiceTool
 from src.tools.web_fetch import WebFetchTool
-from src.tools.web_search import WebSearchTool
+from src.tools.web_search import HybridWebSearch, OpenAIWebSearchClient, WebSearchTool
 from src.vision import VisionClient
 
 driver = get_driver()
@@ -71,8 +68,9 @@ _llm: LLMClient
 _dream: DreamAgent
 _dream_enabled: bool = False
 _meme_radar: MemeRadar | None = None
-_meme_learner: MemeLearner | None = None
 _music_client: NeteaseMusicClient | None = None
+_search_service: HybridWebSearch | None = None
+_meme_knowledge: MemeKnowledgeStore | None = None
 _scheduler: GroupChatScheduler
 _usage_tracker: UsageTracker
 _message_log: MessageLog
@@ -88,22 +86,60 @@ _vision_enabled: bool = True
 _max_images_per_message: int = 5
 _sticker_store: StickerStore | None = None
 _sticker_sender: SendStickerTool | None = None
+_voice_sender: SendVoiceTool | None = None
+_imagegen_tool: GenerateImageTool | None = None
+_imagegen_edit_tool: EditImageTool | None = None
 _vision_client: VisionClient | None = None
 _sticker_auto_collect: bool = True
 _sticker_auto_collect_only_stickers: bool = True
 _sticker_auto_collect_cooldown: int = 8
 _sticker_collect_last: dict[str, float] = {}
 _startup_triggered: bool = False
+_restart_notice_sent: bool = False
+
+
+def _imagegen_pending_rule(event: MessageEvent) -> bool:
+    """仅当该用户/群存在未过期的生图确认请求时触发确认处理。"""
+    if _imagegen_tool is None:
+        return False
+    text = event.get_message().extract_plain_text().strip()
+    if text.startswith("/"):
+        return False
+    group_id = str(event.group_id) if isinstance(event, GroupMessageEvent) else None
+    reply_message_id = event.reply.message_id if event.reply is not None else None
+    return _imagegen_tool.can_handle_confirmation(
+        str(event.user_id), group_id, text, reply_message_id,
+    )
+
+
+_imagegen_confirm = on_message(
+    priority=0, block=True, rule=Rule(_imagegen_pending_rule),
+)
+
+
+@_imagegen_confirm.handle()
+async def handle_imagegen_confirm(bot: Bot, event: MessageEvent) -> None:
+    if _imagegen_tool is None:
+        return
+    group_id = str(event.group_id) if isinstance(event, GroupMessageEvent) else None
+    text = event.get_message().extract_plain_text().strip()
+    reply_message_id = event.reply.message_id if event.reply is not None else None
+    try:
+        await _imagegen_tool.try_confirm(
+            bot=bot, user_id=str(event.user_id), group_id=group_id, text=text,
+            reply_message_id=reply_message_id,
+        )
+    except Exception:
+        logger.warning("imagegen confirm handling failed", exc_info=True)
 
 
 @driver.on_startup
 async def _init() -> None:
-    global _llm, _dream, _dream_enabled, _meme_radar, _meme_learner, _music_client, _scheduler
-    global _identity_mgr, _usage_tracker
+    global _llm, _dream, _dream_enabled, _meme_radar, _music_client, _search_service, _meme_knowledge, _scheduler
+    global _identity_mgr, _usage_tracker, _superusers
     global _message_log, _timeline, _short_term, _allowed_groups, _allowed_private_users, _group_config
-    global _superusers
     global _image_cache, _vision_enabled, _max_images_per_message, _sticker_store, _vision_client
-    global _sticker_sender
+    global _sticker_sender, _voice_sender, _imagegen_tool, _imagegen_edit_tool
     global _sticker_auto_collect, _sticker_auto_collect_only_stickers, _sticker_auto_collect_cooldown
 
     bot_config = load_config()
@@ -213,36 +249,41 @@ async def _init() -> None:
             active_hours=bot_config.meme.active_hours,
             max_entries=bot_config.meme.max_entries,
             max_prompt_entries=bot_config.meme.max_prompt_entries,
-            cards_path=bot_config.meme.cards_file,
-            candidate_min_sightings=bot_config.meme.candidate_min_sightings,
-            verified_confidence=bot_config.meme.verified_confidence,
-            max_group_cards=bot_config.meme.max_group_cards,
         )
-        _meme_learner = MemeLearner(
-            meme_store,
-            enabled=bot_config.meme.learning_enabled,
-            context_limit=bot_config.meme.max_context_examples,
-        )
-        logger.info(
-            "[Startup][Meme] enabled=true learning={} entries={} refresh={}min platforms={}",
-            bot_config.meme.learning_enabled, meme_store.count,
-            bot_config.meme.refresh_minutes, ",".join(bot_config.meme.platforms),
-        )
+        _meme_knowledge = MemeKnowledgeStore(bot_config.meme.knowledge_file)
     else:
-        _meme_learner = None
-        logger.info("[Startup][Meme] enabled=false")
+        _meme_knowledge = None
 
+    _search_service = None
+    if bot_config.search.openai_enabled:
+        if bot_config.search.openai_api_key and bot_config.search.openai_model:
+            _search_service = HybridWebSearch(
+                OpenAIWebSearchClient(
+                    base_url=bot_config.search.openai_base_url,
+                    api_key=bot_config.search.openai_api_key,
+                    model=bot_config.search.openai_model,
+                )
+            )
+            logger.info(
+                "[Search] OpenAI web_search enabled | model={} base_url={}",
+                bot_config.search.openai_model,
+                bot_config.search.openai_base_url,
+            )
+        else:
+            logger.warning("[Search] OpenAI web_search requested but API key or model is empty")
+
+    web_search = _search_service.search if _search_service is not None else None
     tools = ToolRegistry()
     tools.register(RecallMemoTool(memo_store))
     tools.register(UpdateMemoTool(memo_store))
     tools.register(DateTimeTool())
     tools.register(WebFetchTool())
-    tools.register(WebSearchTool())
+    tools.register(WebSearchTool(web_search))
     if meme_store is not None:
         tools.register(GetHotTrendsTool(meme_store))
-        tools.register(SearchMemeTool(meme_store))
-        tools.register(TeachMemeTool(meme_store))
-        tools.register(RecallGroupMemesTool(meme_store))
+        tools.register(SearchMemeTool(meme_store, web_search, _meme_knowledge))
+        if _meme_knowledge is not None:
+            tools.register(SaveMemeKnowledgeTool(_meme_knowledge, on_change=lambda: prompt_builder.invalidate()))
     if _music_client is not None:
         tools.register(MusicSearchTool(_music_client))
         tools.register(MusicShareTool(_music_client))
@@ -273,6 +314,57 @@ async def _init() -> None:
         )
     else:
         logger.info("[Startup][TTS] enabled=false")
+    if bot_config.imagegen.enabled:
+        imagegen_api_key = bot_config.imagegen.api_key
+        if not imagegen_api_key and "bigmodel.cn" in bot_config.imagegen.base_url:
+            imagegen_api_key = bot_config.vision.api_key
+        _imagegen_tool = GenerateImageTool(
+            base_url=bot_config.imagegen.base_url,
+            api_key=imagegen_api_key,
+            model=bot_config.imagegen.model,
+            size=bot_config.imagegen.size,
+            timeout_seconds=bot_config.imagegen.timeout_seconds,
+            max_prompt_chars=bot_config.imagegen.max_prompt_chars,
+            proxy=bot_config.imagegen.proxy,
+            daily_global_limit=bot_config.imagegen.daily_global_limit,
+            daily_user_limit=bot_config.imagegen.daily_user_limit,
+            daily_group_limit=bot_config.imagegen.daily_group_limit,
+            cooldown_seconds=bot_config.imagegen.cooldown_seconds,
+            usage_file=bot_config.imagegen.usage_file,
+        )
+        _imagegen_edit_tool = EditImageTool(
+            base_url=bot_config.imagegen.base_url,
+            api_key=imagegen_api_key,
+            model=bot_config.imagegen.model,
+            size=bot_config.imagegen.size,
+            timeout_seconds=bot_config.imagegen.timeout_seconds,
+            max_prompt_chars=bot_config.imagegen.max_prompt_chars,
+            proxy=bot_config.imagegen.proxy,
+            daily_global_limit=bot_config.imagegen.daily_global_limit,
+            daily_user_limit=bot_config.imagegen.daily_user_limit,
+            daily_group_limit=bot_config.imagegen.daily_group_limit,
+            cooldown_seconds=bot_config.imagegen.cooldown_seconds,
+            usage_file=bot_config.imagegen.usage_file,
+            usage=_imagegen_tool.usage,
+        )
+        tools.register(
+            _imagegen_tool
+        )
+        tools.register(_imagegen_edit_tool)
+        logger.info(
+            "[Startup][ImageGen] enabled=true model={} size={} proxy={} edit=True "
+            "limits=global:{}/user:{}/group:{} cooldown={}s api_key_set={}",
+            bot_config.imagegen.model,
+            bot_config.imagegen.size,
+            bot_config.imagegen.proxy or "none",
+            bot_config.imagegen.daily_global_limit,
+            bot_config.imagegen.daily_user_limit,
+            bot_config.imagegen.daily_group_limit,
+            bot_config.imagegen.cooldown_seconds,
+            bool(imagegen_api_key),
+        )
+    else:
+        logger.info("[Startup][ImageGen] enabled=false")
     tools.register(HttpApiTool())
     tools.register(MuteUserTool(superusers))
     tools.register(SetTitleTool(superusers))
@@ -283,6 +375,7 @@ async def _init() -> None:
         tools.register(SendStickerTool(_sticker_store, send_probability=bot_config.sticker.send_probability))
         tools.register(ManageStickerTool(_sticker_store, superusers))
     _sticker_sender = tools.get("send_sticker")  # type: ignore[assignment]
+    _voice_sender = tools.get("send_voice")  # type: ignore[assignment]
     logger.info("[Startup][Tools] registered count={} names={}", len(tools.names), ",".join(tools.names))
 
     _identity_mgr = IdentityManager()
@@ -295,6 +388,7 @@ async def _init() -> None:
         admins={**bot_config.admins, **{uid: "管理员" for uid in superusers if uid not in bot_config.admins}},
         sticker_store=_sticker_store,
         meme_store=meme_store,
+        meme_knowledge=_meme_knowledge,
     )
     prompt_builder.build_static(identity, bot_self_id="")
 
@@ -340,6 +434,15 @@ async def _init() -> None:
         vision_client=_vision_client,
         message_log=_message_log,
     )
+    rewrite_model = bot_config.imagegen.prompt_rewrite_model
+
+    async def rewrite_image_prompt(current_prompt: str, revision: str) -> str:
+        return await _llm.rewrite_image_prompt(current_prompt, revision, model=rewrite_model)
+
+    if _imagegen_tool is not None:
+        _imagegen_tool.set_prompt_rewriter(rewrite_image_prompt)
+    if _imagegen_edit_tool is not None:
+        _imagegen_edit_tool.set_prompt_rewriter(rewrite_image_prompt)
     if bot_config.llm.usage.enabled:
         _llm._usage_tracker = _usage_tracker
 
@@ -383,6 +486,10 @@ async def _shutdown() -> None:
         await _dream.stop()
     if _meme_radar is not None:
         await _meme_radar.stop()
+    if _search_service is not None:
+        await _search_service.close()
+    if _meme_knowledge is not None:
+        _meme_knowledge.close()
     if _music_client is not None:
         await _music_client.close()
     await _llm.close()
@@ -474,11 +581,28 @@ async def _on_connect(bot: Bot) -> None:
 
     logger.info("Bot 就绪，开始接收消息 ✓")
 
+    global _restart_notice_sent
+    if not _restart_notice_sent:
+        _restart_notice_sent = True
+        await _send_restart_notice(bot)
+
     # Evaluate history for each group — catch up on missed messages (first connect only)
     if is_first_connect:
         for gid in group_ids:
             if _timeline.get_turns(gid) or _timeline.get_pending(gid):
                 _scheduler.trigger(gid)
+
+
+async def _send_restart_notice(bot: Bot) -> None:
+    """进程启动/重启完成后仅私聊通知管理员。"""
+    message = "重启完成，我回来了 ✓"
+    bot_config = load_config()
+    for admin_id in bot_config.admins:
+        try:
+            await bot.send_private_msg(user_id=int(admin_id), message=message)
+        except Exception:
+            logger.warning("failed to send restart notice to admin {}", admin_id)
+    logger.info("restart notice sent | admins={}", len(bot_config.admins))
 
 
 def _session_id(event: MessageEvent) -> str:
@@ -595,19 +719,21 @@ async def _render_message(
                 resolved_parts.append("«图片»" if isinstance(result, BaseException) or result is None else result)
             else:
                 resolved_parts.append(part)
-        ordered_parts = resolved_parts
+        final_parts = resolved_parts
         elapsed_ms = (time.perf_counter() - t0) * 1000
         logger.debug(
             "render_message images | tasks={} ok={} elapsed={:.0f}ms",
-            len(image_tasks), sum(isinstance(p, dict) for p in ordered_parts), elapsed_ms,
+            len(image_tasks), sum(isinstance(p, dict) for p in final_parts), elapsed_ms,
         )
+    else:
+        final_parts = [part for part in ordered_parts if not isinstance(part, asyncio.Task)]
 
-    if not any(isinstance(part, dict) for part in ordered_parts):
-        return "".join(part for part in ordered_parts if isinstance(part, str)).strip()
+    if not any(isinstance(part, dict) for part in final_parts):
+        return "".join(part for part in final_parts if isinstance(part, str)).strip()
 
     blocks: list[ContentBlock] = []
     text_buffer: list[str] = []
-    for part in ordered_parts:
+    for part in final_parts:
         if isinstance(part, str):
             text_buffer.append(part)
             continue
@@ -661,13 +787,6 @@ async def collect_group_context(bot: Bot, event: GroupMessageEvent) -> None:
         content=content,
         message_id=event.message_id,
     )
-    if _meme_learner is not None and _meme_learner.observe(
-        group_id=group_id,
-        speaker=f"{nickname}({event.user_id})",
-        content=content,
-        recent=_timeline.get_pending(group_id),
-    ):
-        _llm._prompt.invalidate(group_id=group_id)
 
     is_sticker = any(
         seg.type == "image"
@@ -776,7 +895,7 @@ async def handle_private_chat(bot: Bot, event: MessageEvent) -> None:
     identity = _identity_mgr.resolve()
     ctx = ToolContext(bot=bot, user_id=str(event.user_id), group_id=None, session_id=sid)
 
-    # Login is security-sensitive and deterministic: do not rely on the LLM to select the tool.
+    # Security-sensitive commands bypass the LLM so dispatch is deterministic.
     command = user_content.strip() if isinstance(user_content, str) else ""
     if command in {"/登录网易云", "/网易云登录"}:
         if _music_client is None:

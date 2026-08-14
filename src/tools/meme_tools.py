@@ -7,12 +7,11 @@ import re
 from typing import Any
 from urllib.parse import urlparse
 
-from src.meme.models import MemeCard
-from src.meme.resolver import MemeResolver
+from src.meme.knowledge import MemeKnowledgeStore
 from src.meme.store import MemeStore, TrendItem
 from src.tools.base import Tool
 from src.tools.context import ToolContext
-from src.tools.web_search import _ddg_search
+from src.tools.web_search import SearchFunction, _ddg_search
 
 _TERM_RE = re.compile(r"[0-9A-Za-z\u4e00-\u9fff]{2,}")
 _GENERIC_TERMS = {"什么梗", "是什么梗", "网络用语", "意思", "来源", "梗", "meme"}
@@ -20,7 +19,6 @@ _MEME_CUES = ("梗", "meme", "表情包", "网络用语", "什么意思", "来�
 _SPAM_CUES = ("送彩金", "彩票平台", "棋牌", "投注", "博彩", "官方入口", "app下载")
 _SOCIAL_HOSTS = ("bilibili.com", "douyin.com", "xiaohongshu.com", "weibo.com", "zhihu.com")
 _QUERY_SUFFIX_RE = re.compile(r"(?:是什么|啥|什么)?(?:梗|meme|表情包|网络用语)+$", re.IGNORECASE)
-_ORIGIN_CUES = ("来源", "出处", "原视频", "原帖", "哪里来的", "哪来的")
 
 
 def _normalize_query(query: str) -> str:
@@ -40,24 +38,6 @@ def _format_trends(rows: list[TrendItem]) -> str:
         heat = f" | 热度 {item.hot_value}" if item.hot_value else ""
         link = f"\n   {item.url}" if item.url else ""
         lines.append(f"- [{item.platform}] #{item.rank} {item.title}{heat}{link}")
-    return "\n".join(lines)
-
-
-def _format_cards(rows: list[MemeCard]) -> str:
-    if not rows:
-        return "没有匹配的群内或全局梗卡。"
-    lines: list[str] = []
-    for card in rows:
-        scope = f"群 {card.group_id}" if card.group_id else "全局"
-        meaning = card.meaning or "含义仍需结合群内语境"
-        lines.append(
-            f"- {card.canonical_name} | {scope} | {card.status} | "
-            f"置信度 {card.confidence:.2f}\n  含义：{meaning}"
-        )
-        if card.usage_examples:
-            lines.append(f"  群内例句：{card.usage_examples[-1]}")
-        if card.source_urls:
-            lines.append("  来源：" + " ".join(card.source_urls))
     return "\n".join(lines)
 
 
@@ -116,9 +96,15 @@ class GetHotTrendsTool(Tool):
 
 
 class SearchMemeTool(Tool):
-    def __init__(self, store: MemeStore) -> None:
+    def __init__(
+        self,
+        store: MemeStore,
+        web_search: SearchFunction | None = None,
+        knowledge: MemeKnowledgeStore | None = None,
+    ) -> None:
         self._store = store
-        self._resolver = MemeResolver(store)
+        self._web_search = web_search or _ddg_search
+        self._knowledge = knowledge
 
     @property
     def name(self) -> str:
@@ -149,25 +135,9 @@ class SearchMemeTool(Tool):
             return "请提供要查询的梗。"
         query = _normalize_query(raw_query)
 
-        resolution = self._resolver.resolve(query, group_id=ctx.group_id)
-        local_section = "【本地梗卡｜当前群优先】\n" + _format_cards(resolution.cards)
-        trend_section = "【本地实时热点匹配】\n" + _format_trends(resolution.trends)
-        asks_origin = any(cue in raw_query for cue in _ORIGIN_CUES)
-        has_local_source = bool(resolution.cards and resolution.cards[0].source_urls)
-        if resolution.confident and (not asks_origin or has_local_source):
-            card = resolution.cards[0]
-            source_note = ""
-            if card.source_urls:
-                source_note = "\n【可核验来源】\n" + "\n".join(card.source_urls)
-            return (
-                f"【查询词】{query}\n{local_section}\n\n{trend_section}{source_note}\n\n"
-                "已优先命中当前群/全局已验证梗卡。回答时说明这是群内约定还是公开来源；"
-                "若用户追问出处但卡片没有 URL，仍需请其提供原帖或继续网页核实，不能编造链接。"
-            )
-
         search_queries = [f"{query} meme", f"{query} 是什么梗", f"{query} 表情包 出处"]
         batches = await asyncio.gather(
-            *(_ddg_search(search_query, 5) for search_query in search_queries),
+            *(self._web_search(search_query, 5) for search_query in search_queries),
             return_exceptions=True,
         )
         seen: set[str] = set()
@@ -188,8 +158,25 @@ class SearchMemeTool(Tool):
         scored_rows.sort(key=lambda pair: pair[0], reverse=True)
         web_rows = [row for _, row in scored_rows[:8]]
 
-        sections = [f"【查询词】{query}\n{local_section}\n\n{trend_section}"]
+        sections = [
+            f"【查询词】{query}\n"
+            f"【本地实时热点匹配】\n{_format_trends(self._store.search(query))}"
+        ]
+        if self._knowledge is not None:
+            known = self._knowledge.search(query)
+            if known:
+                lines = [
+                    f"- {record.canonical}：{record.meaning}\n"
+                    f"  用法：{record.usage}\n  证据：{', '.join(record.evidence)}"
+                    for record in known
+                ]
+                sections.append("【已核验梗知识】\n" + "\n".join(lines))
         if web_rows:
+            if self._knowledge is not None:
+                for row in web_rows:
+                    self._knowledge.record_evidence(
+                        str(row.get("href") or ""), str(row.get("title") or "")
+                    )
             lines = []
             for index, row in enumerate(web_rows, 1):
                 lines.append(
@@ -210,84 +197,3 @@ class SearchMemeTool(Tool):
                 "也绝不能说用户在瞎编。"
             )
         return "\n\n".join(sections)
-
-
-class TeachMemeTool(Tool):
-    """Allow a current group member to explicitly explain or correct local usage."""
-
-    def __init__(self, store: MemeStore) -> None:
-        self._store = store
-
-    @property
-    def name(self) -> str:
-        return "teach_meme"
-
-    @property
-    def description(self) -> str:
-        return (
-            "记录当前群对某个梗的明确解释、别名、来源或纠错。仅当群成员明确教学或纠正时调用；"
-            "不要根据自己的猜测写入。记录默认只在当前群生效。"
-        )
-
-    @property
-    def parameters(self) -> dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "name": {"type": "string", "description": "梗的名称或核心短语"},
-                "meaning": {"type": "string", "description": "群成员明确给出的含义或用法"},
-                "aliases": {"type": "array", "items": {"type": "string"}},
-                "source_urls": {"type": "array", "items": {"type": "string"}},
-                "correction": {"type": "boolean", "description": "是否在纠正旧解释"},
-            },
-            "required": ["name", "meaning"],
-        }
-
-    async def execute(self, ctx: ToolContext, **kwargs: Any) -> str:
-        if not ctx.group_id:
-            return "梗卡按群保存，请在群聊中教学。"
-        name = str(kwargs.get("name") or "").strip()[:40]
-        meaning = str(kwargs.get("meaning") or "").strip()[:500]
-        if not name or not meaning:
-            return "需要同时提供梗名和明确含义。"
-        aliases = [str(value) for value in kwargs.get("aliases", []) if str(value).strip()][:20]
-        urls = [
-            str(value) for value in kwargs.get("source_urls", [])
-            if str(value).startswith(("http://", "https://"))
-        ][:12]
-        card = self._store.teach(
-            name=name,
-            meaning=meaning,
-            group_id=ctx.group_id,
-            speaker=ctx.user_id or "unknown",
-            aliases=aliases,
-            source_urls=urls,
-            correction=bool(kwargs.get("correction", False)),
-        )
-        if card is None:
-            return "写入失败：梗名、含义或当前群信息无效。"
-        action = "已纠正" if kwargs.get("correction") else "已记录"
-        return f"{action}本群梗卡「{card.canonical_name}」，置信度 {card.confidence:.2f}。"
-
-
-class RecallGroupMemesTool(Tool):
-    def __init__(self, store: MemeStore) -> None:
-        self._store = store
-
-    @property
-    def name(self) -> str:
-        return "recall_group_memes"
-
-    @property
-    def description(self) -> str:
-        return "查看当前群已经验证的群内梗和用法，用于自然接梗或核对群内语境。"
-
-    @property
-    def parameters(self) -> dict[str, Any]:
-        return {"type": "object", "properties": {"limit": {"type": "integer"}}}
-
-    async def execute(self, ctx: ToolContext, **kwargs: Any) -> str:
-        if not ctx.group_id:
-            return "当前不在群聊中。"
-        limit = min(max(int(kwargs.get("limit", 10)), 1), 30)
-        return _format_cards(self._store.cards_for_group(ctx.group_id, limit=limit))

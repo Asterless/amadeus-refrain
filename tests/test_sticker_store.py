@@ -386,8 +386,8 @@ def test_format_prompt_view_multiple(store: StickerStore) -> None:
     store.add(_PNG_DATA, "PNG贴", "悲伤时", source="auto")
     view = store.format_prompt_view()
     lines = view.splitlines()
-    # header + 2 entries
-    assert len(lines) == 3
+    # header + usage guidance + 2 entries
+    assert len(lines) == 4
 
 
 # ------------------------------------------------------------------

@@ -49,6 +49,21 @@ enabled = true
 slow_threshold_s = 60.0
 
 # ---------------------------------------------------------------------------
+# 搜索增强（OpenAI Responses API 原生 web_search）
+# ---------------------------------------------------------------------------
+# 开启后，查询会同时发送给 OpenAI 和本地 DDGS 多引擎，再合并排序。
+# Codex/ChatGPT 订阅不能代替 API key；不开启时仍使用 Bing/Google/Brave/DDG。
+[search]
+# 环境变量: SEARCH_OPENAI_ENABLED
+openai_enabled = false
+# 环境变量: SEARCH_OPENAI_BASE_URL
+openai_base_url = "https://api.openai.com/v1"
+# 环境变量: SEARCH_OPENAI_API_KEY
+openai_api_key = ""
+# 环境变量: SEARCH_OPENAI_MODEL
+openai_model = "gpt-5-mini"
+
+# ---------------------------------------------------------------------------
 # 日志
 # ---------------------------------------------------------------------------
 [log]
@@ -117,50 +132,12 @@ platforms = ["weibo", "bilibili", "douyin", "xiaohongshu", "zhihu", "baidu"]
 refresh_minutes = 15
 per_platform_limit = 30
 storage_file = "storage/memes.json"
-# 群内梗卡独立持久化；同一个词在不同群可以有不同含义
-cards_file = "storage/meme_cards.json"
+# 已核验梗义、出处、用法和向量的 SQLite 知识库
+knowledge_file = "storage/meme_knowledge.db"
 # 过期热点不再注入提示词
 active_hours = 72
 max_entries = 500
 max_prompt_entries = 12
-# 自动学习只把短语记为候选；至少由不同成员重复这么多次才升级为已验证
-learning_enabled = true
-candidate_min_sightings = 2
-verified_confidence = 0.75
-max_group_cards = 200
-max_context_examples = 4
-
-# ---------------------------------------------------------------------------
-# 网易云音乐
-# ---------------------------------------------------------------------------
-[music]
-# 需要单独运行一个 NeteaseCloudMusicApi 兼容服务；机器人不会接收或保存明文密码
-enabled = true
-api_base_url = "http://127.0.0.1:3000"
-# 管理员私聊扫码后的 cookie 存储位置（已在 .gitignore 中忽略）
-cookie_file = "storage/netease_cookie.json"
-timeout_seconds = 15.0
-# 可选：由 Bot 自动启动本机 API，仅允许绑定 loopback
-auto_start = false
-service_app = ""
-node_executable = "node"
-
-[tts]
-enabled = true
-provider = "edge"
-voice = "zh-CN-XiaoxiaoNeural"
-rate = "+0%"
-volume = "+0%"
-proxy = ""
-base_url = "http://host.docker.internal:9880"
-ref_audio_path = ""
-prompt_text = ""
-prompt_lang = "zh"
-text_lang = "zh"
-text_split_method = "cut5"
-media_type = "wav"
-timeout_seconds = 120.0
-max_chars = 300
 
 # ---------------------------------------------------------------------------
 # 群聊
@@ -214,6 +191,87 @@ blocked_users = []
 # NapCat HTTP API 地址
 # 环境变量: NAPCAT_API_URL
 api_url = "http://localhost:29300"
+
+# ---------------------------------------------------------------------------
+# 宿主控制服务（管理指令：启停 GPT-SoVITS API / bot 容器）
+# ---------------------------------------------------------------------------
+[control]
+# 总开关
+enabled = false
+# bot 容器访问宿主控制服务的地址
+base_url = "http://host.docker.internal:8765"
+# 控制服务监听端口（与 scripts/control_server.py 一致）
+port = 8765
+# 鉴权 token，必须与宿主上 scripts/control_server.py 使用的 config.toml 相同
+token = ""
+timeout_seconds = 120.0
+
+# ---------------------------------------------------------------------------
+# 网易云音乐
+# ---------------------------------------------------------------------------
+[music]
+# 需要单独运行一个 NeteaseCloudMusicApi 兼容服务；机器人不会接收或保存明文密码
+enabled = true
+api_base_url = "http://127.0.0.1:3000"
+# 管理员私聊扫码后的 cookie 存储位置（已在 .gitignore 中忽略）
+cookie_file = "storage/netease_cookie.json"
+timeout_seconds = 15.0
+# 可选：由 Bot 自动启动本机 API，仅允许绑定 loopback
+auto_start = false
+service_app = ""
+node_executable = "node"
+
+# ---------------------------------------------------------------------------
+# 语音合成（TTS）
+# ---------------------------------------------------------------------------
+[tts]
+# 总开关
+enabled = false
+# provider = "edge" | "gpt_sovits"
+provider = "edge"
+# Edge TTS 音色/语速/音量/代理（仅 provider=edge 生效）
+voice = "zh-CN-XiaoxiaoNeural"
+rate = "+0%"
+volume = "+0%"
+proxy = ""
+# GPT-SoVITS API 地址与参考音频
+base_url = "http://127.0.0.1:9880"
+ref_audio_path = ""
+prompt_text = ""
+prompt_lang = "zh"
+text_lang = "zh"
+text_split_method = "cut5"
+media_type = "wav"
+timeout_seconds = 120.0
+max_chars = 300
+
+# ---------------------------------------------------------------------------
+# 图片生成（OpenAI 兼容 images/generations 接口：GPT-image-2 等）
+# ---------------------------------------------------------------------------
+[imagegen]
+# 总开关
+enabled = false
+# OpenAI 兼容接口地址（米醋中转 New API）
+base_url = "https://www.micuapi.ai/v1"
+# API key：填米醋 Image2 分组的 token（sk- 开头）；
+# 只有 base_url 指向智谱（bigmodel.cn）时才可留空并回退 [vision].api_key
+api_key = ""
+# 模型：gpt-image-2（1K 档福利价，~30s）；2K/4K 会自动切 gpt-image-2-pro
+model = "gpt-image-2"
+# 尺寸：W/H 需为 8 的倍数，≤2.25MP 走 1K 福利档；如 1024x1024 / 1536x1024 / 2048x2048
+size = "1280x1280"
+timeout_seconds = 120.0
+max_prompt_chars = 500
+# 合并用户后续修改的轻量聊天模型；留空则复用 [llm].model
+prompt_rewrite_model = ""
+# 米醋中转国内直连，无需代理；若换官方 OpenAI 才需要填（与 [tts].proxy 同格式）
+proxy = ""
+# 限额（0 = 不限制），用 /设置 修改后立即生效
+daily_global_limit = 20
+daily_user_limit = 5
+daily_group_limit = 15
+cooldown_seconds = 15.0
+usage_file = "storage/imagegen_usage.json"
 
 # ---------------------------------------------------------------------------
 # 多模态视觉（图片理解）

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+from contextlib import suppress
 from pathlib import Path
 
 import loguru
@@ -79,7 +80,7 @@ import nonebot.log as _nlog  # noqa: E402
 _MATCHER_NOISE = ("Event will be handled by", "running complete")
 
 
-def _quiet_filter(record: "loguru.Record") -> bool:
+def _quiet_filter(record: loguru.Record) -> bool:
     if not _nlog.default_filter(record):  # type: ignore[arg-type]
         return False
     name = record.get("name") or ""
@@ -87,10 +88,8 @@ def _quiet_filter(record: "loguru.Record") -> bool:
 
 
 if hasattr(_nlog, "logger_id"):
-    try:
+    with suppress(ValueError):
         logger.remove(_nlog.logger_id)
-    except ValueError:
-        pass
     _nlog.logger_id = logger.add(  # type: ignore[assignment]
         __import__("sys").stderr,
         level=0,

@@ -7,7 +7,13 @@ from src.tools.datetime_tool import DateTimeTool
 from src.tools.group_admin import MuteUserTool
 from src.tools.registry import ToolRegistry
 from src.tools.web_fetch import _is_safe_url
-from src.tools.web_search import WebSearchTool, _ddg_search_sync, _rank_results
+from src.tools.web_search import (
+    HybridWebSearch,
+    WebSearchTool,
+    _ddg_search_sync,
+    _parse_openai_search_response,
+    _rank_results,
+)
 
 # ── SSRF 校验 ──
 
@@ -251,3 +257,68 @@ def test_web_search_ranks_chinese_relevance_and_filters_junk() -> None:
 
     assert results[0]["href"] == "https://www.bilibili.com/video/1"
     assert len(results) == 2
+
+
+def test_openai_web_search_parser_uses_only_returned_sources() -> None:
+    payload = {
+        "output": [
+            {
+                "type": "web_search_call",
+                "action": {
+                    "sources": [
+                        {"title": "抖音原视频", "url": "https://douyin.com/video/1?utm_source=x"}
+                    ]
+                },
+            },
+            {
+                "type": "message",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": "丑橘是一只近期走红的猫。正文中伪造 https://fake.example 不应采纳。",
+                        "annotations": [
+                            {
+                                "type": "url_citation",
+                                "title": "B站考据",
+                                "url": "https://www.bilibili.com/video/2",
+                            }
+                        ],
+                    }
+                ],
+            },
+        ]
+    }
+
+    results = _parse_openai_search_response(payload)
+
+    assert [row["href"] for row in results] == [
+        "https://douyin.com/video/1",
+        "https://www.bilibili.com/video/2",
+    ]
+    assert all("fake.example" not in row["href"] for row in results)
+    assert all("丑橘是一只" in row["body"] for row in results)
+
+
+async def test_hybrid_search_survives_openai_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_ddgs(query: str, max_results: int) -> list[dict[str, str]]:
+        return [
+            {
+                "title": "丑橘是什么梗",
+                "href": "https://www.bilibili.com/video/ddgs",
+                "body": "DDGS 搜索结果",
+            }
+        ]
+
+    class BrokenOpenAI:
+        async def search(self, query: str, max_results: int) -> list[dict[str, str]]:
+            raise RuntimeError("OpenAI unavailable")
+
+        async def close(self) -> None:
+            return None
+
+    monkeypatch.setattr("src.tools.web_search._ddg_search", fake_ddgs)
+    service = HybridWebSearch(BrokenOpenAI())  # type: ignore[arg-type]
+
+    results = await service.search("丑橘是什么梗", 5)
+
+    assert results[0]["href"] == "https://www.bilibili.com/video/ddgs"

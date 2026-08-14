@@ -157,7 +157,7 @@ class DreamConfig(BaseModel):
 
 
 class MemeConfig(BaseModel):
-    """Realtime trend discovery, meme verification, and group-local learning."""
+    """Realtime trend discovery and meme verification."""
 
     enabled: bool = True
     hotboard_url: str = "https://uapis.cn/api/v1/misc/hotboard"
@@ -165,15 +165,10 @@ class MemeConfig(BaseModel):
     refresh_minutes: int = Field(default=15, ge=1)
     per_platform_limit: int = Field(default=30, ge=1, le=50)
     storage_file: str = "storage/memes.json"
+    knowledge_file: str = "storage/meme_knowledge.db"
     active_hours: int = Field(default=72, ge=1)
     max_entries: int = Field(default=500, ge=20)
     max_prompt_entries: int = Field(default=12, ge=1, le=30)
-    cards_file: str = "storage/meme_cards.json"
-    learning_enabled: bool = True
-    candidate_min_sightings: int = Field(default=2, ge=2, le=10)
-    verified_confidence: float = Field(default=0.75, ge=0.5, le=1.0)
-    max_group_cards: int = Field(default=200, ge=20, le=2000)
-    max_context_examples: int = Field(default=4, ge=1, le=10)
 
 
 class MusicConfig(BaseModel):
@@ -186,6 +181,16 @@ class MusicConfig(BaseModel):
     auto_start: bool = False
     service_app: str = ""
     node_executable: str = "node"
+
+
+class ControlConfig(BaseModel):
+    """Host-side control service settings (start/stop TTS API and bot container)."""
+
+    enabled: bool = False
+    base_url: str = "http://host.docker.internal:8765"
+    port: int = Field(default=8765, ge=1, le=65535)
+    token: str = ""
+    timeout_seconds: float = Field(default=120.0, ge=5, le=600)
 
 
 class TTSConfig(BaseModel):
@@ -206,6 +211,36 @@ class TTSConfig(BaseModel):
     media_type: Literal["wav", "ogg", "aac"] = "wav"
     timeout_seconds: float = Field(default=120.0, ge=5, le=600)
     max_chars: int = Field(default=300, ge=1, le=1000)
+
+
+class ImageGenConfig(BaseModel):
+    """Image generation settings (OpenAI-compatible images API, e.g. GPT-image-2 / CogView)."""
+
+    enabled: bool = False
+    base_url: str = "https://api.openai.com/v1"
+    api_key: str = ""  # 接 OpenAI 时必填；base_url 指向智谱时留空可回退 [vision].api_key
+    model: str = "gpt-image-2"
+    size: str = "1280x1280"
+    timeout_seconds: float = Field(default=120.0, ge=10, le=600)
+    max_prompt_chars: int = Field(default=500, ge=10, le=2000)
+    prompt_rewrite_model: str = ""
+    # 国内网络访问 OpenAI 需要代理（与 [tts].proxy 同格式）
+    proxy: str = ""
+    # ---- 限额（0 = 不限制）----
+    daily_global_limit: int = Field(default=20, ge=0)
+    daily_user_limit: int = Field(default=5, ge=0)
+    daily_group_limit: int = Field(default=15, ge=0)
+    cooldown_seconds: float = Field(default=15.0, ge=0)
+    usage_file: str = "storage/imagegen_usage.json"
+
+
+class SearchConfig(BaseModel):
+    """Optional OpenAI native web search augmentation."""
+
+    openai_enabled: bool = False
+    openai_base_url: str = "https://api.openai.com/v1"
+    openai_api_key: str = ""
+    openai_model: str = "gpt-5-mini"
 
 
 class VisionConfig(BaseModel):
@@ -248,7 +283,10 @@ class BotConfig(BaseModel):
     dream: DreamConfig = DreamConfig()
     meme: MemeConfig = MemeConfig()
     music: MusicConfig = MusicConfig()
+    control: ControlConfig = ControlConfig()
     tts: TTSConfig = TTSConfig()
+    imagegen: ImageGenConfig = ImageGenConfig()
+    search: SearchConfig = SearchConfig()
     soul: SoulConfig = SoulConfig()
     group: GroupConfig = GroupConfig()
     napcat: NapcatConfig = NapcatConfig()

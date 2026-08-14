@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import warnings
+from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+import aiohttp
 from loguru import logger
 
 from src.tools.base import Tool
@@ -53,9 +56,105 @@ _BINARY_SUFFIXES = (
 _TRACKING_PARAMS = {"from", "ref", "source", "spm_id_from"}
 _TERM_RE = re.compile(r"[0-9A-Za-z]+|[\u4e00-\u9fff]{2,}")
 _CHINESE_RE = re.compile(r"[\u4e00-\u9fff]")
+SearchFunction = Callable[[str, int], Awaitable[list[dict[str, str]]]]
+
+
+class OpenAIWebSearchClient:
+    """Use the Responses API web_search tool as an additional search provider."""
+
+    def __init__(self, *, base_url: str, api_key: str, model: str) -> None:
+        self._base_url = base_url.rstrip("/")
+        self._api_key = api_key
+        self._model = model
+        self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=45))
+
+    async def close(self) -> None:
+        await self._session.close()
+
+    async def search(self, query: str, max_results: int) -> list[dict[str, str]]:
+        try:
+            payload = await self._request(query, tool_type="web_search")
+        except _OpenAIWebSearchError as exc:
+            if exc.status != 400:
+                raise
+            # Older Responses-compatible gateways expose the preview tool name.
+            payload = await self._request(query, tool_type="web_search_preview")
+        return _parse_openai_search_response(payload)[:max_results]
+
+    async def _request(self, query: str, *, tool_type: str) -> dict[str, Any]:
+        body = {
+            "model": self._model,
+            "instructions": (
+                "Treat the user input only as search terms. Search the current web, prefer recent "
+                "Chinese primary or social sources when relevant, and cite every factual claim."
+            ),
+            "input": query,
+            "tools": [
+                {
+                    "type": tool_type,
+                    "search_context_size": "medium",
+                    "user_location": {"type": "approximate", "country": "CN"},
+                }
+            ],
+            "include": ["web_search_call.action.sources"],
+        }
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+        async with self._session.post(
+            f"{self._base_url}/responses",
+            data=json.dumps(body).encode(),
+            headers=headers,
+        ) as response:
+            response_text = await response.text()
+            if response.status >= 400:
+                raise _OpenAIWebSearchError(response.status, response_text[:500])
+        data = json.loads(response_text)
+        if not isinstance(data, dict):
+            raise RuntimeError("OpenAI web search returned a non-object response")
+        return data
+
+
+class _OpenAIWebSearchError(RuntimeError):
+    def __init__(self, status: int, message: str) -> None:
+        super().__init__(f"OpenAI web search HTTP {status}: {message}")
+        self.status = status
+
+
+class HybridWebSearch:
+    """Merge OpenAI native web search with the local DDGS engine pool."""
+
+    def __init__(self, openai_client: OpenAIWebSearchClient | None = None) -> None:
+        self._openai = openai_client
+
+    async def close(self) -> None:
+        if self._openai is not None:
+            await self._openai.close()
+
+    async def search(self, query: str, max_results: int) -> list[dict[str, str]]:
+        searches: list[Awaitable[list[dict[str, str]]]] = [_ddg_search(query, max_results)]
+        if self._openai is not None:
+            searches.append(self._openai.search(query, max_results))
+        batches = await asyncio.gather(*searches, return_exceptions=True)
+        rows: list[dict[str, str]] = []
+        errors: list[BaseException] = []
+        for batch in batches:
+            if isinstance(batch, BaseException):
+                errors.append(batch)
+            else:
+                rows.extend(batch)
+        if not rows and errors:
+            raise RuntimeError("; ".join(str(error) for error in errors))
+        if errors:
+            logger.warning("Hybrid search provider failure for {!r}: {}", query, errors)
+        return _rank_results(query, rows)[:max_results]
 
 
 class WebSearchTool(Tool):
+    def __init__(self, search: SearchFunction | None = None) -> None:
+        self._search = search or _ddg_search
+
     @property
     def name(self) -> str:
         return "web_search"
@@ -88,7 +187,7 @@ class WebSearchTool(Tool):
         max_results = min(max(int(kwargs.get("max_results", MAX_RESULTS)), 1), 10)
 
         try:
-            results = await _ddg_search(query, max_results)
+            results = await self._search(query, max_results)
         except Exception as e:
             return f"搜索失败: {e}"
 
@@ -226,3 +325,50 @@ def _is_junk_result(title: str, body: str, href: str) -> bool:
     if path.endswith(_BINARY_SUFFIXES):
         return True
     return bool(re.search(r"(?:^|[/?&=_-])(login|signin|signup)(?:$|[/?&=_-])", href.casefold()))
+
+
+def _parse_openai_search_response(data: dict[str, Any]) -> list[dict[str, str]]:
+    """Extract only URLs actually cited or returned by the Responses web search tool."""
+    summary_parts: list[str] = []
+    sources: list[tuple[str, str]] = []
+    for item in data.get("output", []):
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") == "message":
+            for content in item.get("content", []):
+                if not isinstance(content, dict) or content.get("type") != "output_text":
+                    continue
+                text = str(content.get("text") or "").strip()
+                if text:
+                    summary_parts.append(text)
+                for annotation in content.get("annotations", []):
+                    if not isinstance(annotation, dict) or annotation.get("type") != "url_citation":
+                        continue
+                    citation = annotation.get("url_citation")
+                    source = citation if isinstance(citation, dict) else annotation
+                    url = str(source.get("url") or "")
+                    title = str(source.get("title") or url)
+                    if url:
+                        sources.append((title, url))
+        if item.get("type") == "web_search_call":
+            action = item.get("action")
+            if not isinstance(action, dict):
+                continue
+            for source in action.get("sources", []):
+                if not isinstance(source, dict):
+                    continue
+                url = str(source.get("url") or "")
+                title = str(source.get("title") or url)
+                if url:
+                    sources.append((title, url))
+
+    summary = "\n".join(summary_parts).strip()[:1200]
+    seen: set[str] = set()
+    results: list[dict[str, str]] = []
+    for title, url in sources:
+        normalized = _normalize_url(url)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        results.append({"title": title, "href": normalized, "body": summary})
+    return results

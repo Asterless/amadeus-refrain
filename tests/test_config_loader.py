@@ -43,8 +43,24 @@ def test_load_defaults_without_file(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert cfg.group.debounce_seconds == 5.0
     assert cfg.group.batch_size == 10
     assert cfg.napcat.api_url == "http://localhost:29300"
-    assert cfg.music.api_base_url == "http://127.0.0.1:3000"
+    assert cfg.search.openai_enabled is False
+    assert cfg.search.openai_base_url == "https://api.openai.com/v1"
     assert cfg.admins == {}
+
+
+def test_openai_search_env_overrides(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SEARCH_OPENAI_ENABLED", "true")
+    monkeypatch.setenv("SEARCH_OPENAI_BASE_URL", "https://search.example/v1")
+    monkeypatch.setenv("SEARCH_OPENAI_API_KEY", "sk-search")
+    monkeypatch.setenv("SEARCH_OPENAI_MODEL", "search-model")
+
+    cfg = load_config(config_path=None)
+
+    assert cfg.search.openai_enabled is True
+    assert cfg.search.openai_base_url == "https://search.example/v1"
+    assert cfg.search.openai_api_key == "sk-search"
+    assert cfg.search.openai_model == "search-model"
 
 
 def test_load_from_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -126,7 +142,6 @@ api_url = "http://napcat-from-toml:29300"
     monkeypatch.setenv("LLM_API_KEY", "sk-from-env")
     monkeypatch.setenv("LLM_MODEL", "model-from-env")
     monkeypatch.setenv("NAPCAT_API_URL", "http://napcat-from-env:29300")
-    monkeypatch.setenv("NETEASE_MUSIC_API_URL", "http://music-api:3000")
 
     cfg = load_config(config_path=str(toml_file))
 
@@ -134,7 +149,6 @@ api_url = "http://napcat-from-toml:29300"
     assert cfg.llm.api_key == "sk-from-env"
     assert cfg.llm.model == "model-from-env"
     assert cfg.napcat.api_url == "http://napcat-from-env:29300"
-    assert cfg.music.api_base_url == "http://music-api:3000"
 
 
 def test_cli_overrides_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

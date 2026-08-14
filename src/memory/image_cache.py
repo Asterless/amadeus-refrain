@@ -57,7 +57,12 @@ class ImageCache:
         if path.exists() and not (preserve_original and not path.with_suffix(".gif").exists()):
             logger.debug("image cache hit | file_id={}", file_id)
             original = path.with_suffix(".gif")
-            return ImageRefBlock(type="image_ref", path=str(path), media_type="image/jpeg", original_path=str(original if original.exists() else path))
+            return ImageRefBlock(
+                type="image_ref",
+                path=str(path),
+                media_type="image/jpeg",
+                original_path=str(original if original.exists() else path),
+            )
 
         async with self._sem:
             t0 = time.perf_counter()
@@ -109,7 +114,12 @@ class ImageCache:
         path.parent.mkdir(parents=True, exist_ok=True)
         img.jpegsave(str(path), Q=80, strip=True)
 
-        return ImageRefBlock(type="image_ref", path=str(path), media_type="image/jpeg", original_path=str(original_path))
+        return ImageRefBlock(
+            type="image_ref",
+            path=str(path),
+            media_type="image/jpeg",
+            original_path=str(original_path),
+        )
 
     async def load_as_base64(self, ref: ImageRefBlock | dict[str, Any]) -> dict[str, Any] | None:
         """Read image from disk and return an Anthropic image content block.

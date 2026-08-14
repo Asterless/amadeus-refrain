@@ -4,12 +4,7 @@ import pytest
 
 from src.meme.store import MemeStore, TrendItem
 from src.tools.context import ToolContext
-from src.tools.meme_tools import (
-    GetHotTrendsTool,
-    SearchMemeTool,
-    TeachMemeTool,
-    _normalize_query,
-)
+from src.tools.meme_tools import GetHotTrendsTool, SearchMemeTool, _normalize_query
 
 
 def test_normalize_query_removes_attached_meme_suffix() -> None:
@@ -96,54 +91,3 @@ async def test_search_meme_fails_closed_when_web_search_fails(
     result = await SearchMemeTool(store).execute(ToolContext(user_id="1"), query="陌生梗")
     assert "不代表该梗不存在" in result
     assert "绝不能说用户在瞎编" in result
-
-
-async def test_verified_group_card_skips_web_for_meaning_query(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    store = MemeStore(str(tmp_path / "memes.json"), cards_path=str(tmp_path / "cards.json"))
-    store.teach(name="群暗号", meaning="只在本群表示开饭", group_id="g1", speaker="1")
-
-    async def should_not_search(query: str, limit: int) -> list[dict[str, str]]:
-        raise AssertionError("verified local meaning should resolve before web")
-
-    monkeypatch.setattr("src.tools.meme_tools._ddg_search", should_not_search)
-    result = await SearchMemeTool(store).execute(
-        ToolContext(user_id="1", group_id="g1"), query="群暗号是什么梗"
-    )
-    assert "只在本群表示开饭" in result
-    assert "已验证梗卡" in result
-
-
-async def test_origin_query_keeps_searching_when_local_card_has_no_url(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    store = MemeStore(str(tmp_path / "memes.json"), cards_path=str(tmp_path / "cards.json"))
-    store.teach(name="群暗号", meaning="一个群梗", group_id="g1", speaker="1")
-    queries: list[str] = []
-
-    async def fake_search(query: str, limit: int) -> list[dict[str, str]]:
-        queries.append(query)
-        return []
-
-    monkeypatch.setattr("src.tools.meme_tools._ddg_search", fake_search)
-    result = await SearchMemeTool(store).execute(
-        ToolContext(user_id="1", group_id="g1"), query="群暗号出处"
-    )
-    assert queries
-    assert "暂未找到可验证来源" in result
-
-
-async def test_teach_meme_is_group_scoped_and_preserves_source_url(tmp_path) -> None:
-    store = MemeStore(str(tmp_path / "memes.json"), cards_path=str(tmp_path / "cards.json"))
-    result = await TeachMemeTool(store).execute(
-        ToolContext(user_id="1", group_id="g1"),
-        name="丑橘",
-        meaning="印尼橘猫表情包",
-        source_urls=["https://www.bilibili.com/video/example"],
-    )
-
-    assert "已记录" in result
-    assert store.search_cards("丑橘", group_id="g2") == []
-    card = store.search_cards("丑橘", group_id="g1")[0]
-    assert card.source_urls == ["https://www.bilibili.com/video/example"]

@@ -87,8 +87,7 @@ def _fix_cq_codes(text: str) -> str:
 
 def _split_segments(text: str) -> list[str]:
     """Split reply by explicit separators and separate per-person @ replies."""
-    text = _strip_markdown(text)
-    text = _fix_cq_codes(text)
+    text = _strip_markdown(_fix_cq_codes(text))
     segments: list[str] = []
     current: list[str] = []
     for line in text.split("\n"):
@@ -544,9 +543,34 @@ class LLMClient:
         self._usage_tracker: UsageTracker | None = None
         self._image_cache = image_cache
         self._vision_client = vision_client
+        self._private_chat_locks: dict[str, asyncio.Lock] = {}
 
     async def close(self) -> None:
         await self._session.close()
+
+    async def rewrite_image_prompt(
+        self, current_prompt: str, revision: str, *, model: str = "",
+    ) -> str:
+        """Merge one image revision into a canonical, conflict-free prompt."""
+        system = [{
+            "type": "text",
+            "text": (
+                "你是生图提示词编辑器。把当前画面描述和用户修改合并为一段最终中文提示词。"
+                "保留未被修改的细节，删除被新要求推翻的旧细节，不解释、不列出修改记录，只输出最终提示词。"
+            ),
+        }]
+        messages = [{
+            "role": "user",
+            "content": f"当前画面描述：\n{current_prompt}\n\n用户修改：\n{revision}",
+        }]
+        result = await _call_api(
+            self._session, self._base_url, self._api_key, model or self._model,
+            system, messages, max_tokens=300,
+        )
+        merged = str(result.get("text") or "").strip()
+        if not merged:
+            raise RuntimeError("image prompt rewriter returned empty text")
+        return merged
 
     async def _call(
         self, system_blocks: list[dict[str, Any]], messages: list[Any], tools: list[dict[str, Any]] | None = None,
@@ -592,7 +616,9 @@ class LLMClient:
     # Message building
     # ------------------------------------------------------------------
 
-    def _build_group_messages(self, group_id: str) -> list[dict[str, Any]]:
+    def _build_group_messages(
+        self, group_id: str, pending_count: int | None = None,
+    ) -> list[dict[str, Any]]:
         """Build message list for group chat: optional summary + turns + pending + cache breakpoint."""
         assert self._timeline is not None
         messages: list[dict[str, Any]] = []
@@ -611,6 +637,8 @@ class LLMClient:
 
         # Pending — temporary merge as tail user message
         pending = self._timeline.get_pending(group_id)
+        if pending_count is not None:
+            pending = pending[:pending_count]
         if pending:
             from src.memory.group_timeline import _merge_user_contents
             messages.append({"role": "user", "content": _merge_user_contents(pending)})
@@ -678,6 +706,40 @@ class LLMClient:
         describe_images: bool = True,
         response_mode: Literal["direct", "proactive"] = "direct",
         trigger_context: str = "",
+        pending_message_id: int | None = None,
+    ) -> str | None:
+        kwargs = {
+            "session_id": session_id,
+            "user_id": user_id,
+            "user_content": user_content,
+            "identity": identity,
+            "group_id": group_id,
+            "ctx": ctx,
+            "on_segment": on_segment,
+            "describe_images": describe_images,
+            "response_mode": response_mode,
+            "trigger_context": trigger_context,
+            "pending_message_id": pending_message_id,
+        }
+        if group_id is not None:
+            return await self._chat_unlocked(**kwargs)
+        lock = self._private_chat_locks.setdefault(session_id, asyncio.Lock())
+        async with lock:
+            return await self._chat_unlocked(**kwargs)
+
+    async def _chat_unlocked(
+        self,
+        session_id: str,
+        user_id: str,
+        user_content: Content,
+        identity: Identity,
+        group_id: str | None = None,
+        ctx: ToolContext | None = None,
+        on_segment: Callable[[str], Awaitable[None]] | None = None,
+        describe_images: bool = True,
+        response_mode: Literal["direct", "proactive"] = "direct",
+        trigger_context: str = "",
+        pending_message_id: int | None = None,
     ) -> str | None:
         content_preview = user_content[:80] if isinstance(user_content, str) else str(user_content)[:80]
         logger.info(
@@ -687,10 +749,12 @@ class LLMClient:
         t0 = time.monotonic()
 
         is_group = group_id is not None and self._timeline is not None
+        group_pending_count = 0
 
         if is_group:
             assert group_id is not None
             assert self._timeline is not None
+            group_pending_count = self._timeline.pending_count_through(group_id, pending_message_id)
             # Group: messages already added to timeline by group_listener
             if self._timeline.needs_compact(group_id, self._max_context_tokens, self._compact_ratio):
                 logger.info(
@@ -699,7 +763,7 @@ class LLMClient:
                     int(self._max_context_tokens * self._compact_ratio),
                 )
                 await self._compact_group(group_id, identity)
-            messages = self._build_group_messages(group_id)
+            messages = self._build_group_messages(group_id, group_pending_count)
         else:
             # Private: use ShortTermMemory
             self._short_term.add(session_id, "user", user_content)
@@ -718,6 +782,7 @@ class LLMClient:
                     user_id=user_id,
                     group_id=group_id,
                     memo_store=self._memo_store,
+                    meme_query=content_preview,
                 )
             except Exception:
                 logger.exception("build_blocks failed, falling back to static block")
@@ -826,7 +891,9 @@ class LLMClient:
                     session_id, len(full_reply), len(segments), elapsed,
                 )
                 if is_group and group_id is not None and self._timeline is not None:
-                    self._timeline.add(group_id, role="assistant", content=full_reply)
+                    self._timeline.commit_assistant(
+                        group_id, full_reply, pending_count=group_pending_count,
+                    )
                     self._timeline.set_input_tokens(group_id, result["input_tokens"])
                 else:
                     self._short_term.add(session_id, "assistant", full_reply)
@@ -928,7 +995,9 @@ class LLMClient:
         last_seg = segments[-1]
         full_reply = "\n".join(segments)
         if is_group and group_id is not None and self._timeline is not None:
-            self._timeline.add(group_id, role="assistant", content=full_reply)
+            self._timeline.commit_assistant(
+                group_id, full_reply, pending_count=group_pending_count,
+            )
             self._timeline.set_input_tokens(group_id, result["input_tokens"])
         else:
             self._short_term.add(session_id, "assistant", full_reply)

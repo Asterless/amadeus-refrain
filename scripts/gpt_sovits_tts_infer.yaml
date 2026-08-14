@@ -1,0 +1,18 @@
+# GPT-SoVITS v2 inference config for the trained "shigeju" model.
+#
+# Deploy: copy to GPT-SoVITS root and run:
+#   runtime\python.exe api_v2.py -a 0.0.0.0 -p 9880 -c GPT_SoVITS/configs/tts_infer_shigeju.yaml
+#
+# NOTE: vits_weights_path must point at the exported SoVITS weight that the
+# SoVITS (s2) training produces in SoVITS_weights_v2/, e.g.
+# "SoVITS_weights_v2/shigeju_e8_s2333k.pth". Until that file exists the API
+# silently falls back to the base pretrained s2G2333k.pth voice.
+version: v2
+custom:
+  bert_base_path: GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large
+  cnhuhbert_base_path: GPT_SoVITS/pretrained_models/chinese-hubert-base
+  device: cuda
+  is_half: true
+  t2s_weights_path: GPT_weights_v2/shigeju-e10.ckpt
+  version: v2
+  vits_weights_path: SoVITS_weights_v2/shigeju_e8_s2333k.pth
