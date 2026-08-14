@@ -507,6 +507,16 @@ async def test_send_sticker_no_bot(store: StickerStore) -> None:
     assert result == "Bot 不可用"
 
 
+async def test_send_sticker_probability_gate(store: StickerStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    stk_id, _ = store.add(_JPEG_DATA, "desc", "hint")
+    tool = SendStickerTool(store, send_probability=0.2)
+    monkeypatch.setattr("src.tools.sticker_tools.random.random", lambda: 0.9)
+
+    result = await tool.execute(ToolContext(bot=MagicMock(), group_id="123"), sticker_id=stk_id)
+
+    assert "概率未命中" in result
+
+
 # ---------------------------------------------------------------------------
 # SendStickerTool — send exception is caught
 # ---------------------------------------------------------------------------

@@ -30,6 +30,7 @@
 - [快速开始](#快速开始)
 - [人设配置](#人设配置)
 - [配置参考](#配置参考)
+- [开源部署指南](#开源部署指南)
 - [Tool Calling 工具集](#tool-calling-工具集)
 - [本地开发](#本地开发)
 - [项目结构](#项目结构)
@@ -142,6 +143,8 @@ docker compose up -d
 
 首次启动后访问 [http://localhost:6099](http://localhost:6099)，在 NapCat WebUI 扫码登录 QQ。
 
+如果你想给开源用户一条更稳的部署路径，请直接阅读 [开源部署指南](docs/deployment.md)。Windows 下也可以直接运行仓库里的 `start_bot_with_tts.bat`。
+
 ### 4. 测试效果
 
 - **私聊** — 直接发消息
@@ -188,9 +191,26 @@ docker compose up -d
 | `[group.overrides.<gid>]` | 同 `[group]` 字段子集 | 单群覆盖（未填字段 fallback 全局） |
 | `[vision]` | `enabled` / `max_images_per_message` / `max_dimension` | 多模态图片处理 |
 | `[dream]` | `enabled` / `interval_hours` / `max_rounds` | Dream Agent 后台整理 |
+| `[music]` | `enabled` / `api_base_url` / `cookie_file` | 网易云搜索、扫码登录和歌曲分享 |
 | `[napcat]` | `api_url` | NapCat HTTP API 地址（用于主动发消息等） |
 
 完整字段列表见 [`config.example.toml`](config.example.toml)。
+
+## 开源部署指南
+
+如果你准备把项目公开，建议把 README 当作入口页，把真正的部署细节放到单独文档里：
+
+- [部署指南](docs/deployment.md) — 从零部署、端口、可选模块、常见问题
+- [运维手册](docs/operations.md) — Docker、升级、日志、启动和重建
+- [架构深挖](docs/architecture.md) — 适合想理解系统的人
+
+对于普通部署者，最常见的顺序是：
+
+1. 复制 `.env.example` 和 `config.example.toml`
+2. 填 LLM / 管理员 / 可选模块配置
+3. `docker compose up -d --build`
+4. 打开 NapCat WebUI 完成 QQ 登录
+5. 看 `storage/logs/` 排查第一轮问题
 
 ## Tool Calling 工具集
 
@@ -213,7 +233,25 @@ docker compose up -d
 | `mute_user` | 禁言群成员（duration=0 解除） | 仅管理员可触发 |
 | `set_title` | 设置 / 清除群专属头衔 | 仅管理员可触发 |
 | `send_group_msg` | 主动向指定群发消息 | 仅管理员可触发 |
+| `music_search` | 搜索网易云歌曲并取得歌曲 ID | 需要兼容的音乐 API 服务 |
+| `music_share` | 向当前群或私聊发送网易云音乐卡片 | 发送前会核验歌曲 ID |
+| `music_login_qr` | 私聊发送网易云登录二维码 | 仅管理员可触发 |
+| `music_login_status` | 检查扫码状态并保存 cookie | 仅管理员私聊可触发 |
 | `pass_turn` | 主动跳过本轮回复（不发任何消息） | 由 client 自动注入，所有对话都能用 |
+
+### 网易云音乐服务
+
+音乐模块通过独立的 `NeteaseCloudMusicApi` 兼容服务访问网易云。先启动该服务，再配置：
+
+```toml
+[music]
+enabled = true
+api_base_url = "http://127.0.0.1:3000"
+cookie_file = "storage/netease_cookie.json"
+```
+
+Bot 在 Docker 中、音乐 API 在宿主机时，将地址改为 `http://host.docker.internal:3000`。管理员私聊 Bot
+发送 `/登录网易云`，扫码并确认后再发送 `/检查登录状态`。登录 cookie 只写入本地存储，不进入提示词和 Git。
 
 **仅在内部生命周期使用的工具：**
 

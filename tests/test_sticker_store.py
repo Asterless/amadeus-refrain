@@ -41,13 +41,15 @@ _UNKNOWN_DATA = b"\x00\x01\x02\x03" + b"\xde\xad\xbe\xef" * 20
 def test_sticker_config_defaults() -> None:
     cfg = StickerConfig()
     assert cfg.enabled is True
+    assert cfg.send_probability == 0.8
     assert cfg.storage_dir == "storage/stickers"
     assert cfg.max_count == 200
 
 
 def test_sticker_config_custom() -> None:
-    cfg = StickerConfig(enabled=False, storage_dir="/tmp/stickers", max_count=50)
+    cfg = StickerConfig(enabled=False, send_probability=0.35, storage_dir="/tmp/stickers", max_count=50)
     assert cfg.enabled is False
+    assert cfg.send_probability == 0.35
     assert cfg.storage_dir == "/tmp/stickers"
     assert cfg.max_count == 50
 
@@ -61,6 +63,7 @@ def test_bot_config_has_sticker_field() -> None:
 def test_bot_config_sticker_defaults() -> None:
     bot = BotConfig()
     assert bot.sticker.enabled is True
+    assert bot.sticker.send_probability == 0.8
     assert bot.sticker.storage_dir == "storage/stickers"
     assert bot.sticker.max_count == 200
 
