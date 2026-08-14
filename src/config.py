@@ -2,7 +2,7 @@
 
 from typing import Literal, Self
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 
 class ContextConfig(BaseModel):
@@ -156,6 +156,58 @@ class DreamConfig(BaseModel):
     max_rounds: int = 15
 
 
+class MemeConfig(BaseModel):
+    """Realtime trend discovery, meme verification, and group-local learning."""
+
+    enabled: bool = True
+    hotboard_url: str = "https://uapis.cn/api/v1/misc/hotboard"
+    platforms: list[str] = ["weibo", "bilibili", "douyin", "xiaohongshu", "zhihu", "baidu"]
+    refresh_minutes: int = Field(default=15, ge=1)
+    per_platform_limit: int = Field(default=30, ge=1, le=50)
+    storage_file: str = "storage/memes.json"
+    active_hours: int = Field(default=72, ge=1)
+    max_entries: int = Field(default=500, ge=20)
+    max_prompt_entries: int = Field(default=12, ge=1, le=30)
+    cards_file: str = "storage/meme_cards.json"
+    learning_enabled: bool = True
+    candidate_min_sightings: int = Field(default=2, ge=2, le=10)
+    verified_confidence: float = Field(default=0.75, ge=0.5, le=1.0)
+    max_group_cards: int = Field(default=200, ge=20, le=2000)
+    max_context_examples: int = Field(default=4, ge=1, le=10)
+
+
+class MusicConfig(BaseModel):
+    """NetEase Cloud Music API and login session settings."""
+
+    enabled: bool = True
+    api_base_url: str = "http://127.0.0.1:3000"
+    cookie_file: str = "storage/netease_cookie.json"
+    timeout_seconds: float = Field(default=15.0, ge=2, le=60)
+    auto_start: bool = False
+    service_app: str = ""
+    node_executable: str = "node"
+
+
+class TTSConfig(BaseModel):
+    """Text-to-speech provider settings."""
+
+    enabled: bool = True
+    provider: Literal["edge", "gpt_sovits"] = "edge"
+    voice: str = "zh-CN-XiaoxiaoNeural"
+    rate: str = "+0%"
+    volume: str = "+0%"
+    proxy: str = ""
+    base_url: str = "http://host.docker.internal:9880"
+    ref_audio_path: str = ""
+    prompt_text: str = ""
+    prompt_lang: str = "zh"
+    text_lang: str = "zh"
+    text_split_method: str = "cut5"
+    media_type: Literal["wav", "ogg", "aac"] = "wav"
+    timeout_seconds: float = Field(default=120.0, ge=5, le=600)
+    max_chars: int = Field(default=300, ge=1, le=1000)
+
+
 class VisionConfig(BaseModel):
     """多模态视觉配置。"""
 
@@ -178,8 +230,12 @@ class StickerConfig(BaseModel):
 
     enabled: bool = True
     reply_on_receive: bool = False
+    send_probability: float = Field(default=0.8, ge=0.0, le=1.0)
     storage_dir: str = "storage/stickers"
     max_count: int = 200
+    auto_collect: bool = True
+    auto_collect_only_stickers: bool = True
+    auto_collect_cooldown_seconds: int = 8
 
 
 class BotConfig(BaseModel):
@@ -190,6 +246,9 @@ class BotConfig(BaseModel):
     memo: MemoConfig = MemoConfig()
     compact: CompactConfig = CompactConfig()
     dream: DreamConfig = DreamConfig()
+    meme: MemeConfig = MemeConfig()
+    music: MusicConfig = MusicConfig()
+    tts: TTSConfig = TTSConfig()
     soul: SoulConfig = SoulConfig()
     group: GroupConfig = GroupConfig()
     napcat: NapcatConfig = NapcatConfig()

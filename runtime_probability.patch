@@ -1,0 +1,37 @@
+diff --git a/src/tools/sticker_tools.py b/src/tools/sticker_tools.py
+--- a/src/tools/sticker_tools.py
++++ b/src/tools/sticker_tools.py
+@@ -1,8 +1,9 @@
+ """Sticker tools: save, send, and manage stickers in the library."""
+ 
+-from pathlib import Path
++import random
+ import time
++from pathlib import Path
+ from typing import Any
+@@ -219,9 +220,10 @@ class SendStickerTool(Tool):
+     """Send a sticker from the library as a standalone image message."""
+ 
+-    def __init__(self, store: StickerStore) -> None:
++    def __init__(self, store: StickerStore, *, send_probability: float = 1.0) -> None:
+         self._store = store
+         self._last_sent: dict[str, float] = {}
++        self._send_probability = min(max(send_probability, 0.0), 1.0)
+@@ -247,6 +249,9 @@ class SendStickerTool(Tool):
+         if not ctx.bot:
+             return "Bot 不可用"
+ 
++        if random.random() >= self._send_probability:
++            return "本轮表情包概率未命中，不发送"
++
+         file_path = self._store.resolve_path(sticker_id)
+diff --git a/src/plugins/chat/__init__.py b/src/plugins/chat/__init__.py
+--- a/src/plugins/chat/__init__.py
++++ b/src/plugins/chat/__init__.py
+@@ -227,7 +227,8 @@ async def _init() -> None:
+     if _sticker_store is not None:
+         tools.register(SaveStickerTool(_sticker_store, superusers))
+-        tools.register(SendStickerTool(_sticker_store))
++        # The model must first choose a relevant sticker; only 20% of those attempts send it.
++        tools.register(SendStickerTool(_sticker_store, send_probability=0.20))
+         tools.register(ManageStickerTool(_sticker_store, superusers))

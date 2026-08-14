@@ -7,7 +7,7 @@ from src.tools.datetime_tool import DateTimeTool
 from src.tools.group_admin import MuteUserTool
 from src.tools.registry import ToolRegistry
 from src.tools.web_fetch import _is_safe_url
-from src.tools.web_search import WebSearchTool
+from src.tools.web_search import WebSearchTool, _ddg_search_sync, _rank_results
 
 # ── SSRF 校验 ──
 
@@ -162,3 +162,92 @@ async def test_web_search_max_results_capped(monkeypatch: pytest.MonkeyPatch) ->
     ctx = ToolContext(user_id="123")
     await tool.execute(ctx, query="test", max_results=99)
     assert captured["n"] == 10
+
+
+def test_web_search_aggregates_engines_and_tolerates_partial_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def fake_backend(query: str, max_results: int, backend: str) -> list[dict[str, str]]:
+        calls.append(backend)
+        if backend == "google":
+            raise RuntimeError("provider unavailable")
+        return [
+            {
+                "title": f"丑橘是什么梗 - {backend}",
+                "href": f"https://{backend}.example/result",
+                "body": "丑橘是近期流行的橘猫表情包。",
+            }
+        ]
+
+    monkeypatch.setattr("src.tools.web_search._search_backend_sync", fake_backend)
+    results = _ddg_search_sync("丑橘是什么梗", 3)
+
+    assert set(calls) == {"bing", "google", "brave", "duckduckgo"}
+    assert len(results) == 3
+    assert all("丑橘" in result["title"] for result in results)
+
+
+def test_web_search_falls_back_to_auto_when_named_engines_are_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def fake_backend(query: str, max_results: int, backend: str) -> list[dict[str, str]]:
+        calls.append(backend)
+        if backend != "auto":
+            return []
+        return [
+            {
+                "title": "回退结果",
+                "href": "https://example.com/fallback",
+                "body": "有效摘要",
+            }
+        ]
+
+    monkeypatch.setattr("src.tools.web_search._search_backend_sync", fake_backend)
+    results = _ddg_search_sync("测试查询", 5)
+
+    assert calls.count("auto") == 1
+    assert results[0]["title"] == "回退结果"
+
+
+def test_web_search_ranks_chinese_relevance_and_filters_junk() -> None:
+    rows = [
+        {
+            "title": "Unrelated English result",
+            "href": "https://example.com/page",
+            "body": "Nothing useful here.",
+        },
+        {
+            "title": "丑橘是什么梗",
+            "href": "https://www.bilibili.com/video/1?utm_source=test",
+            "body": "丑橘是一只橘猫相关的网络梗。",
+        },
+        {
+            "title": "丑橘是什么梗",
+            "href": "https://duplicate.example/page",
+            "body": "重复标题。",
+        },
+        {
+            "title": "丑橘字体下载",
+            "href": "https://spam.example/font.ttf",
+            "body": "font",
+        },
+        {
+            "title": "丑橘官方入口",
+            "href": "https://spam.example/page",
+            "body": "app下载送彩金",
+        },
+        {
+            "title": "丑橘登录",
+            "href": "https://example.com/login?next=home",
+            "body": "登录页面",
+        },
+    ]
+
+    results = _rank_results("丑橘是什么梗", rows)
+
+    assert results[0]["href"] == "https://www.bilibili.com/video/1"
+    assert len(results) == 2

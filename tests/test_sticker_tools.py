@@ -124,21 +124,23 @@ async def test_save_sticker_dedup(
     ctx = _ctx_with_tag("admin1", "img:1", str(jpeg_file))
 
     first = await tool.execute(ctx, image_tag="img:1", description="第一次", usage_hint="hint")
-    second = await tool.execute(ctx, image_tag="img:1", description="第二次", usage_hint="hint")
+    second = await tool.execute(ctx, image_tag="img:1", description="第二次", usage_hint="新场景")
 
     assert "已收录" in first
     assert "已存在" in second
     # The sticker_id should appear in both messages
     stk_id = first.split(" ")[0]
     assert stk_id in second
+    assert store.get(stk_id)["description"] == "第二次"  # type: ignore[index]
+    assert store.get(stk_id)["usage_hint"] == "新场景"  # type: ignore[index]
 
 
 # ---------------------------------------------------------------------------
-# SaveStickerTool — GIF rejected
+# SaveStickerTool — GIF accepted
 # ---------------------------------------------------------------------------
 
 
-async def test_save_sticker_gif_rejected(
+async def test_save_sticker_gif_accepted(
     store: StickerStore, superusers: set[str], gif_file: Path
 ) -> None:
     tool = SaveStickerTool(store, superusers)
@@ -146,8 +148,7 @@ async def test_save_sticker_gif_rejected(
 
     result = await tool.execute(ctx, image_tag="img:1", description="gif", usage_hint="hint")
 
-    assert "无法收录" in result
-    assert "GIF" in result
+    assert "已收录" in result
 
 
 # ---------------------------------------------------------------------------
@@ -504,6 +505,16 @@ async def test_send_sticker_no_bot(store: StickerStore) -> None:
     result = await tool.execute(ctx, sticker_id=stk_id)
 
     assert result == "Bot 不可用"
+
+
+async def test_send_sticker_probability_gate(store: StickerStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    stk_id, _ = store.add(_JPEG_DATA, "desc", "hint")
+    tool = SendStickerTool(store, send_probability=0.2)
+    monkeypatch.setattr("src.tools.sticker_tools.random.random", lambda: 0.9)
+
+    result = await tool.execute(ToolContext(bot=MagicMock(), group_id="123"), sticker_id=stk_id)
+
+    assert "概率未命中" in result
 
 
 # ---------------------------------------------------------------------------

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import html
 import io
 import json
 import re
@@ -33,8 +34,33 @@ _RATE_LIMIT_BASE_DELAY = 5.0  # seconds
 _SEGMENT_SEP = "---cut---"
 _SEGMENT_DELAY = 0.5  # seconds between segment sends
 _BLANK_LINE_RE = re.compile(r"\n{2,}")
+_MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^)]+)\)")
+_MARKDOWN_CODE_RE = re.compile(r"```(?:[A-Za-z0-9_+-]+)?\n?(.*?)```", re.DOTALL)
+_MARKDOWN_DECORATION_RE = re.compile(
+    r"(^|\n)\s{0,3}#{1,6}\s+|(^|\n)\s*[-*+]\s+|~~|\*\*|__|`|"
+    r"(?<!\*)\*(?!\*)|(?<!_)_(?!_)"
+)
 _CQ_CODE_RE = re.compile(r"\[CQ:[^\]]+\]")
 _CQ_KV_FIX_RE = re.compile(r",(\w+):")
+_CQ_AT_BOUNDARY_RE = re.compile(r"(?=\[CQ:at(?:,|\]))")
+_DSML_PREFIX_RE = r"(?:｜｜|\|\|)DSML(?:｜｜|\|\|)"
+_DSML_BLOCK_RE = re.compile(
+    rf"<{_DSML_PREFIX_RE}tool_calls>.*?</{_DSML_PREFIX_RE}tool_calls>",
+    re.DOTALL,
+)
+_DSML_INVOKE_RE = re.compile(
+    rf"<{_DSML_PREFIX_RE}invoke\s+name=\"([^\"]+)\">(.*?)</{_DSML_PREFIX_RE}invoke>",
+    re.DOTALL,
+)
+_DSML_PARAMETER_RE = re.compile(
+    rf"<{_DSML_PREFIX_RE}parameter\s+name=\"([^\"]+)\"(?:\s+string=\"([^\"]+)\")?\s*>"
+    rf"(.*?)</{_DSML_PREFIX_RE}parameter>",
+    re.DOTALL,
+)
+_DSML_MARKER_RE = re.compile(_DSML_PREFIX_RE)
+_SOURCE_QUESTION_RE = re.compile(r"来源|出处|原视频|原帖|哪里来|哪来的|怎么来的")
+_URL_RE = re.compile(r"https?://[^\s<>\"'，。；！？（）【】\u4e00-\u9fff]+")
+_PREFERRED_SOURCE_HOSTS = ("bilibili.com", "douyin.com", "weibo.com", "zhihu.com", "xiaohongshu.com")
 
 
 class RateLimitError(RuntimeError):
@@ -46,28 +72,42 @@ def _clean_text(text: str) -> str:
     return _BLANK_LINE_RE.sub("\n", text).strip()
 
 
+def _strip_markdown(text: str) -> str:
+    """Convert common Markdown emitted by the model into QQ-friendly plain text."""
+    text = _MARKDOWN_CODE_RE.sub(r"\1", text)
+    text = _MARKDOWN_LINK_RE.sub(r"\1 (\2)", text)
+    text = _MARKDOWN_DECORATION_RE.sub(lambda match: match.group(1) or "", text)
+    return _clean_text(text)
+
+
 def _fix_cq_codes(text: str) -> str:
     """Normalize CQ code params: [CQ:reply,id:123] → [CQ:reply,id=123]."""
     return _CQ_CODE_RE.sub(lambda m: _CQ_KV_FIX_RE.sub(r",\1=", m.group(0)), text)
 
 
 def _split_segments(text: str) -> list[str]:
-    """Split reply into multiple messages by --- separator, cleaning blank lines."""
+    """Split reply by explicit separators and separate per-person @ replies."""
+    text = _strip_markdown(text)
     text = _fix_cq_codes(text)
     segments: list[str] = []
     current: list[str] = []
     for line in text.split("\n"):
         if line.strip() == _SEGMENT_SEP:
-            seg = "\n".join(current).strip()
-            if seg:
-                segments.append(_clean_text(seg))
+            segments.extend(_split_at_replies("\n".join(current)))
             current = []
         else:
             current.append(line)
-    last = "\n".join(current).strip()
-    if last:
-        segments.append(_clean_text(last))
+    segments.extend(_split_at_replies("\n".join(current)))
     return segments or [_clean_text(text)]
+
+
+def _split_at_replies(text: str) -> list[str]:
+    """Split a segment when it starts addressing another QQ user."""
+    cleaned = _clean_text(text)
+    if not cleaned:
+        return []
+    parts = _CQ_AT_BOUNDARY_RE.split(cleaned)
+    return [_clean_text(part) for part in parts if _clean_text(part)]
 
 
 def _is_pass_turn_echo(text: str) -> bool:
@@ -89,6 +129,82 @@ class _ToolUse:
         self.id = id
         self.name = name
         self.input = input
+
+
+def _extract_dsml_tool_calls(text: str) -> tuple[str, list[_ToolUse]]:
+    """Convert DeepSeek-style textual DSML calls into structured tool uses.
+
+    Some Anthropic-compatible gateways occasionally stream DSML tags as plain
+    text. Those tags are internal protocol data and must never reach QQ.
+    """
+    tool_uses: list[_ToolUse] = []
+    for index, invoke_match in enumerate(_DSML_INVOKE_RE.finditer(text)):
+        name = html.unescape(invoke_match.group(1)).strip()
+        input_data: dict[str, Any] = {}
+        for param_match in _DSML_PARAMETER_RE.finditer(invoke_match.group(2)):
+            param_name = html.unescape(param_match.group(1)).strip()
+            string_flag = (param_match.group(2) or "true").casefold()
+            raw_value = html.unescape(param_match.group(3)).strip()
+            if string_flag == "true":
+                value: Any = raw_value
+            else:
+                try:
+                    value = json.loads(raw_value)
+                except (json.JSONDecodeError, TypeError):
+                    value = raw_value
+            if param_name:
+                input_data[param_name] = value
+        if name:
+            tool_uses.append(_ToolUse(id=f"dsml_{index}", name=name, input=input_data))
+
+    cleaned = _DSML_BLOCK_RE.sub("", text).strip()
+    if _DSML_MARKER_RE.search(cleaned):
+        # Malformed or partial protocol markup is safer to drop than expose.
+        cleaned = ""
+    return cleaned, tool_uses
+
+
+def _message_text(message: dict[str, Any]) -> str:
+    content = message.get("content", "")
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    return " ".join(
+        str(block.get("text", ""))
+        for block in content
+        if isinstance(block, dict) and block.get("type") == "text"
+    )
+
+
+def _latest_user_asks_for_source(messages: list[dict[str, Any]]) -> bool:
+    for message in reversed(messages):
+        if message.get("role") == "user":
+            return bool(_SOURCE_QUESTION_RE.search(_message_text(message)))
+    return False
+
+
+def _extract_source_urls(text: str) -> list[str]:
+    urls: list[str] = []
+    for match in _URL_RE.findall(text):
+        url = match.rstrip(".,，。；;!！?？)]}）】")
+        if url and url not in urls:
+            urls.append(url)
+    return urls
+
+
+def _ensure_source_link(reply: str, required: bool, source_urls: list[str]) -> str:
+    if not required or _URL_RE.search(reply):
+        return reply
+    if source_urls:
+        preferred = next(
+            (url for url in source_urls if any(host in url.casefold() for host in _PREFERRED_SOURCE_HOSTS)),
+            source_urls[0],
+        )
+        return f"{reply.rstrip()}\n来源：{preferred}"
+    if "暂未找到可验证链接" in reply:
+        return reply
+    return f"{reply.rstrip()}\n来源：暂未找到可验证链接"
 
 
 def _cached_text(text: str) -> dict[str, Any]:
@@ -175,14 +291,14 @@ async def _resolve_image_refs(
                     if desc:
                         tag_counter += 1
                         tag = f"img:{tag_counter}"
-                        image_tag_map[tag] = orig_block["path"]
+                        image_tag_map[tag] = orig_block.get("original_path", orig_block["path"])
                         new_content.append({"type": "text", "text": f"«{tag}» 图片描述：{desc}"})
                         resolved_count += 1
                         continue
 
                 tag_counter += 1
                 tag = f"img:{tag_counter}"
-                image_tag_map[tag] = orig_block["path"]
+                image_tag_map[tag] = orig_block.get("original_path", orig_block["path"])
                 new_content.append({"type": "text", "text": f"«{tag}»"})
                 if cache_ctrl:
                     resolved = {**resolved, "cache_control": cache_ctrl}
@@ -211,7 +327,7 @@ def _hash_json(obj: Any) -> str:
 def _log_cache_debug(
     session_id: str,
     system_blocks: list[dict[str, Any]],
-    tool_defs: list[dict[str, Any]],
+    tool_defs: list[dict[str, Any]] | None,
     msg_count: int,
 ) -> None:
     tools_hash = _hash_json(tool_defs)
@@ -364,8 +480,13 @@ async def _call_api(
     total_input = input_tokens + cache_read + cache_create
     output_tokens = usage.get("output_tokens", 0)
 
+    text, dsml_tool_uses = _extract_dsml_tool_calls("".join(text_parts))
+    if dsml_tool_uses:
+        logger.warning("converted textual DSML tool calls | count={}", len(dsml_tool_uses))
+        tool_uses.extend(dsml_tool_uses)
+
     return {
-        "text": "".join(text_parts),
+        "text": text,
         "tool_uses": tool_uses,
         "input_tokens": total_input,
         "output_tokens": output_tokens,
@@ -616,6 +737,9 @@ class LLMClient:
             )
         if trigger_context:
             turn_policy += f"\n【触发信息】{trigger_context}"
+        requester_context = self._prompt.requester_context(user_id)
+        if requester_context:
+            turn_policy = f"{requester_context}\n{turn_policy}"
         system_blocks = [*system_blocks, {"type": "text", "text": turn_policy}]
 
         messages, image_tag_map = await _resolve_image_refs(
@@ -624,6 +748,8 @@ class LLMClient:
             self._vision_client,
             describe_images=describe_images,
         )
+        source_link_required = _latest_user_asks_for_source(messages)
+        source_urls: list[str] = []
 
         tool_defs: list[dict[str, Any]] | None = None
         if not self._tools.empty:
@@ -686,6 +812,7 @@ class LLMClient:
                         tool_rounds=round_i, elapsed_s=elapsed,
                     )
                     return None
+                reply = _ensure_source_link(reply, source_link_required, source_urls)
                 segments = _split_segments(reply)
                 if on_segment and len(segments) > 1:
                     for seg in segments[:-1]:
@@ -742,17 +869,41 @@ class LLMClient:
             ]
             tool_results: list[dict[str, Any]] = []
             for tu, result_text in zip(tool_uses, call_results, strict=True):
-                logger.debug("tool_result | name={} result={!r}", tu.name, result_text[:200])
+                logger.info("tool_result | name={} result={!r}", tu.name, result_text[:200])
+                if tu.name == "search_meme":
+                    source_urls.extend(url for url in _extract_source_urls(result_text) if url not in source_urls)
                 tool_results.append({"type": "tool_result", "tool_use_id": tu.id, "content": result_text})
             messages.append({"role": "user", "content": tool_results})
 
         logger.warning("tool loop exhausted | session={} rounds={}", session_id, MAX_TOOL_ROUNDS)
-        result = await self._call(system_blocks, messages)
+        final_blocks = [
+            *system_blocks,
+            {
+                "type": "text",
+                "text": (
+                    "【工具轮次已用完】不要再调用或输出任何工具、XML、DSML、JSON 或内部标记。"
+                    "请仅用自然语言给出当前能确认的结论；证据不足就简短说明暂时无法确认，不能硬编。"
+                ),
+            },
+        ]
+        result = await self._call(final_blocks, messages)
         acc_input += result["input_tokens"] - result.get("cache_read", 0) - result.get("cache_create", 0)
         acc_output += result.get("output_tokens", 0)
         acc_cache_read += result.get("cache_read", 0)
         acc_cache_create += result.get("cache_create", 0)
-        reply = result["text"] or "..."
+        leaked_tool_calls: list[_ToolUse] = result.get("tool_uses", [])
+        if leaked_tool_calls:
+            logger.warning(
+                "tool calls suppressed after loop exhaustion | session={} count={}",
+                session_id, len(leaked_tool_calls),
+            )
+        reply = result["text"].strip()
+        if not reply:
+            if response_mode == "proactive":
+                if is_group and group_id is not None and self._timeline is not None:
+                    self._timeline.set_input_tokens(group_id, result["input_tokens"])
+                return None
+            reply = "这轮没有查到足够可靠的信息，我先不硬编。"
         if response_mode == "proactive" and _is_pass_turn_echo(reply):
             logger.info(
                 "pass_turn text suppressed | session={} text={!r}",
@@ -768,6 +919,7 @@ class LLMClient:
                 tool_rounds=MAX_TOOL_ROUNDS, elapsed_s=time.monotonic() - t0,
             )
             return None
+        reply = _ensure_source_link(reply, source_link_required, source_urls)
         segments = _split_segments(reply)
         if on_segment and len(segments) > 1:
             for seg in segments[:-1]:

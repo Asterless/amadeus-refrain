@@ -30,6 +30,7 @@ from src.config_loader import load_config as _load_config  # noqa: E402
 _bot_config = _load_config(config_path=args.config)
 log_dir = Path(_bot_config.log.dir)
 log_dir.mkdir(parents=True, exist_ok=True)
+logger.remove()
 logger.add(
     log_dir / "bot_{time:YYYY-MM-DD}.log",
     rotation="10 MB",
@@ -86,7 +87,10 @@ def _quiet_filter(record: "loguru.Record") -> bool:
 
 
 if hasattr(_nlog, "logger_id"):
-    logger.remove(_nlog.logger_id)
+    try:
+        logger.remove(_nlog.logger_id)
+    except ValueError:
+        pass
     _nlog.logger_id = logger.add(  # type: ignore[assignment]
         __import__("sys").stderr,
         level=0,

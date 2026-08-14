@@ -3,6 +3,7 @@
 import asyncio
 import time
 from datetime import timedelta
+from pathlib import Path
 
 import aiohttp
 from loguru import logger
@@ -30,6 +31,7 @@ from src.llm.dream import DreamAgent, setup_dream_logger
 from src.llm.prompt import PromptBuilder, load_instruction
 from src.llm.scheduler import GroupChatScheduler
 from src.llm.usage import UsageTracker
+from src.meme import MemeLearner, MemeRadar, MemeStore, UapiTrendProvider
 from src.memory.group_timeline import GroupTimeline
 from src.memory.history_loader import load_group_history
 from src.memory.image_cache import ImageCache
@@ -37,23 +39,40 @@ from src.memory.memo_store import MemoStore
 from src.memory.message_log import MessageLog
 from src.memory.short_term import ShortTermMemory
 from src.memory.types import Content, ContentBlock, ImageRefBlock, TextBlock
+from src.music import NeteaseMusicClient
 from src.sticker.store import StickerStore
-from src.vision import VisionClient
 from src.tools import ToolRegistry
 from src.tools.context import ToolContext
 from src.tools.datetime_tool import DateTimeTool
 from src.tools.group_admin import MuteUserTool, SendGroupMsgTool, SetTitleTool
 from src.tools.http_api import HttpApiTool
+from src.tools.meme_tools import (
+    GetHotTrendsTool,
+    RecallGroupMemesTool,
+    SearchMemeTool,
+    TeachMemeTool,
+)
 from src.tools.memo_tools import RecallMemoTool, UpdateMemoTool
-from src.tools.sticker_tools import ManageStickerTool, SaveStickerTool, SendStickerTool
+from src.tools.music_tools import (
+    MusicLoginStatusTool,
+    MusicQrLoginTool,
+    MusicSearchTool,
+    MusicShareTool,
+)
+from src.tools.sticker_tools import ManageStickerTool, SaveStickerTool, SendStickerTool, _deliver_sticker
+from src.tools.voice_tools import SendVoiceTool
 from src.tools.web_fetch import WebFetchTool
 from src.tools.web_search import WebSearchTool
+from src.vision import VisionClient
 
 driver = get_driver()
 
 _llm: LLMClient
 _dream: DreamAgent
 _dream_enabled: bool = False
+_meme_radar: MemeRadar | None = None
+_meme_learner: MemeLearner | None = None
+_music_client: NeteaseMusicClient | None = None
 _scheduler: GroupChatScheduler
 _usage_tracker: UsageTracker
 _message_log: MessageLog
@@ -63,21 +82,32 @@ _short_term: ShortTermMemory
 _allowed_groups: set[int] = set()
 _group_config: GroupConfig = GroupConfig()
 _allowed_private_users: set[int] = set()
+_superusers: set[str] = set()
 _image_cache: ImageCache
 _vision_enabled: bool = True
 _max_images_per_message: int = 5
 _sticker_store: StickerStore | None = None
+_sticker_sender: SendStickerTool | None = None
 _vision_client: VisionClient | None = None
+_sticker_auto_collect: bool = True
+_sticker_auto_collect_only_stickers: bool = True
+_sticker_auto_collect_cooldown: int = 8
+_sticker_collect_last: dict[str, float] = {}
 _startup_triggered: bool = False
 
 
 @driver.on_startup
 async def _init() -> None:
-    global _llm, _dream, _dream_enabled, _scheduler, _identity_mgr, _usage_tracker
+    global _llm, _dream, _dream_enabled, _meme_radar, _meme_learner, _music_client, _scheduler
+    global _identity_mgr, _usage_tracker
     global _message_log, _timeline, _short_term, _allowed_groups, _allowed_private_users, _group_config
+    global _superusers
     global _image_cache, _vision_enabled, _max_images_per_message, _sticker_store, _vision_client
+    global _sticker_sender
+    global _sticker_auto_collect, _sticker_auto_collect_only_stickers, _sticker_auto_collect_cooldown
 
     bot_config = load_config()
+    logger.info("[Startup][Chat] initializing chat plugin")
     _allowed_groups = set(bot_config.group.allowed_groups)
     _group_config = bot_config.group
     _allowed_private_users = set(bot_config.allowed_private_users)
@@ -88,6 +118,13 @@ async def _init() -> None:
     )
     _vision_enabled = bot_config.vision.enabled
     _max_images_per_message = bot_config.vision.max_images_per_message
+    _sticker_auto_collect = bot_config.sticker.auto_collect
+    _sticker_auto_collect_only_stickers = bot_config.sticker.auto_collect_only_stickers
+    _sticker_auto_collect_cooldown = bot_config.sticker.auto_collect_cooldown_seconds
+    logger.info(
+        "[Startup][Vision] enabled={} describe_mode={} max_images={}",
+        _vision_enabled, bot_config.vision.describe_mode, _max_images_per_message,
+    )
 
     # Cleanup stale cache on startup
     await _image_cache.cleanup(max_age=timedelta(hours=bot_config.vision.cache_max_age_hours))
@@ -103,6 +140,13 @@ async def _init() -> None:
                 "sticker sync_from_disk | added={} skipped={} duplicates={}",
                 synced["added"], synced["skipped"], synced["duplicates"],
             )
+        logger.info(
+            "[Startup][Sticker] enabled=true count={} max_count={} send_probability={:.0%} auto_collect={}",
+            len(_sticker_store.list_all()), bot_config.sticker.max_count,
+            bot_config.sticker.send_probability, _sticker_auto_collect,
+        )
+    else:
+        logger.info("[Startup][Sticker] enabled=false")
 
     # 免费识图预处理：聊天模型不支持图片时，先用视觉模型把图转成文字描述
     _vision_client = None
@@ -137,6 +181,56 @@ async def _init() -> None:
     short_term = _short_term
 
     superusers = set(bot_config.admins.keys()) | driver.config.superusers
+    _superusers = superusers
+
+    _music_client = None
+    if bot_config.music.enabled:
+        _music_client = NeteaseMusicClient(
+            bot_config.music.api_base_url,
+            cookie_file=bot_config.music.cookie_file,
+            timeout=bot_config.music.timeout_seconds,
+        )
+        if bot_config.music.auto_start and bot_config.music.service_app:
+            try:
+                ready = await _music_client.start_local_service(
+                    bot_config.music.service_app,
+                    node_executable=bot_config.music.node_executable,
+                )
+                logger.info("[Music] local API auto-start | ready={}", ready)
+            except (OSError, ValueError):
+                logger.warning("[Music] local API auto-start failed", exc_info=True)
+        logger.info(
+            "[Startup][Music] enabled=true api={} auto_start={}",
+            bot_config.music.api_base_url, bot_config.music.auto_start,
+        )
+    else:
+        logger.info("[Startup][Music] enabled=false")
+
+    meme_store: MemeStore | None = None
+    if bot_config.meme.enabled:
+        meme_store = MemeStore(
+            bot_config.meme.storage_file,
+            active_hours=bot_config.meme.active_hours,
+            max_entries=bot_config.meme.max_entries,
+            max_prompt_entries=bot_config.meme.max_prompt_entries,
+            cards_path=bot_config.meme.cards_file,
+            candidate_min_sightings=bot_config.meme.candidate_min_sightings,
+            verified_confidence=bot_config.meme.verified_confidence,
+            max_group_cards=bot_config.meme.max_group_cards,
+        )
+        _meme_learner = MemeLearner(
+            meme_store,
+            enabled=bot_config.meme.learning_enabled,
+            context_limit=bot_config.meme.max_context_examples,
+        )
+        logger.info(
+            "[Startup][Meme] enabled=true learning={} entries={} refresh={}min platforms={}",
+            bot_config.meme.learning_enabled, meme_store.count,
+            bot_config.meme.refresh_minutes, ",".join(bot_config.meme.platforms),
+        )
+    else:
+        _meme_learner = None
+        logger.info("[Startup][Meme] enabled=false")
 
     tools = ToolRegistry()
     tools.register(RecallMemoTool(memo_store))
@@ -144,14 +238,52 @@ async def _init() -> None:
     tools.register(DateTimeTool())
     tools.register(WebFetchTool())
     tools.register(WebSearchTool())
+    if meme_store is not None:
+        tools.register(GetHotTrendsTool(meme_store))
+        tools.register(SearchMemeTool(meme_store))
+        tools.register(TeachMemeTool(meme_store))
+        tools.register(RecallGroupMemesTool(meme_store))
+    if _music_client is not None:
+        tools.register(MusicSearchTool(_music_client))
+        tools.register(MusicShareTool(_music_client))
+        tools.register(MusicQrLoginTool(_music_client, superusers))
+        tools.register(MusicLoginStatusTool(_music_client, superusers))
+    if bot_config.tts.enabled:
+        tools.register(
+            SendVoiceTool(
+                provider=bot_config.tts.provider,
+                voice=bot_config.tts.voice,
+                rate=bot_config.tts.rate,
+                volume=bot_config.tts.volume,
+                proxy=bot_config.tts.proxy,
+                base_url=bot_config.tts.base_url,
+                ref_audio_path=bot_config.tts.ref_audio_path,
+                prompt_text=bot_config.tts.prompt_text,
+                prompt_lang=bot_config.tts.prompt_lang,
+                text_lang=bot_config.tts.text_lang,
+                text_split_method=bot_config.tts.text_split_method,
+                media_type=bot_config.tts.media_type,
+                timeout_seconds=bot_config.tts.timeout_seconds,
+                max_chars=bot_config.tts.max_chars,
+            )
+        )
+        logger.info(
+            "[Startup][TTS] enabled=true provider={} voice={} max_chars={}",
+            bot_config.tts.provider, bot_config.tts.voice, bot_config.tts.max_chars,
+        )
+    else:
+        logger.info("[Startup][TTS] enabled=false")
     tools.register(HttpApiTool())
     tools.register(MuteUserTool(superusers))
     tools.register(SetTitleTool(superusers))
     tools.register(SendGroupMsgTool(superusers))
     if _sticker_store is not None:
         tools.register(SaveStickerTool(_sticker_store, superusers))
-        tools.register(SendStickerTool(_sticker_store))
+        # The model must first choose a relevant sticker; config controls the final send gate.
+        tools.register(SendStickerTool(_sticker_store, send_probability=bot_config.sticker.send_probability))
         tools.register(ManageStickerTool(_sticker_store, superusers))
+    _sticker_sender = tools.get("send_sticker")  # type: ignore[assignment]
+    logger.info("[Startup][Tools] registered count={} names={}", len(tools.names), ",".join(tools.names))
 
     _identity_mgr = IdentityManager()
     soul_dir = bot_config.soul.dir
@@ -160,8 +292,9 @@ async def _init() -> None:
     identity = _identity_mgr.resolve()
     prompt_builder = PromptBuilder(
         instruction=instruction,
-        admins=bot_config.admins,
+        admins={**bot_config.admins, **{uid: "管理员" for uid in superusers if uid not in bot_config.admins}},
         sticker_store=_sticker_store,
+        meme_store=meme_store,
     )
     prompt_builder.build_static(identity, bot_self_id="")
 
@@ -177,10 +310,12 @@ async def _init() -> None:
         sticker_store=_sticker_store,
         on_memo_change=lambda: prompt_builder.invalidate(),
     )
+    logger.info("[Startup][Dream] enabled={} interval={}h", _dream_enabled, bot_config.dream.interval_hours)
 
     _usage_tracker = UsageTracker(db_path="storage/usage.db")
     if bot_config.llm.usage.enabled:
         await _usage_tracker.init()
+    logger.info("[Startup][Usage] enabled={}", bot_config.llm.usage.enabled)
 
     _message_log = MessageLog(db_path="storage/messages.db")
     await _message_log.init()
@@ -223,13 +358,33 @@ async def _init() -> None:
         group_config=bot_config.group,
         always_describe_images=bot_config.vision.describe_mode == "always",
         reply_on_sticker=bot_config.sticker.enabled and bot_config.sticker.reply_on_receive,
+        auto_sticker_sender=_sticker_sender,
     )
+    _meme_radar = None
+    if meme_store is not None:
+        provider = UapiTrendProvider(bot_config.meme.hotboard_url)
+        _meme_radar = MemeRadar(
+            meme_store,
+            provider,
+            platforms=bot_config.meme.platforms,
+            refresh_minutes=bot_config.meme.refresh_minutes,
+            per_platform_limit=bot_config.meme.per_platform_limit,
+            on_change=prompt_builder.invalidate,
+        )
+        _meme_radar.start()
+        logger.info("[Startup][MemeRadar] started refresh={}min", bot_config.meme.refresh_minutes)
+
+    logger.info("[Startup][Chat] initialization complete")
 
 
 @driver.on_shutdown
 async def _shutdown() -> None:
     if _dream_enabled:
         await _dream.stop()
+    if _meme_radar is not None:
+        await _meme_radar.stop()
+    if _music_client is not None:
+        await _music_client.close()
     await _llm.close()
     await _scheduler.close()
     await _message_log.close()
@@ -348,6 +503,7 @@ async def _render_message(
     """
     ordered_parts: list[str | ImageRefBlock | asyncio.Task[ImageRefBlock | None]] = []
     image_count = 0
+    image_tasks: list[asyncio.Task[ImageRefBlock | None]] = []
 
     # 引用回复 → «回复 昵称(QQ号): 原文摘要»
     if reply is not None:
@@ -363,8 +519,27 @@ async def _render_message(
                 original = original[:cap] + "…"
             label = "回复 我" if is_reply_to_bot else f"回复 {nick}({uid})"
             ordered_parts.append(f"«{label}: {original}» ")
-
-    image_tasks: list[asyncio.Task[ImageRefBlock | None]] = []
+            for reply_seg in reply_msg:
+                if reply_seg.type != "image" or session is None:
+                    continue
+                if image_count >= _max_images_per_message:
+                    break
+                url = reply_seg.data.get("url", "")
+                file_id = reply_seg.data.get("file", "")
+                if not url or not file_id:
+                    continue
+                file_id = file_id.split(".")[0] if "." in file_id else file_id
+                is_sticker_segment = str(
+                    reply_seg.data.get("subType", reply_seg.data.get("sub_type", "0"))
+                ) == "1"
+                task = asyncio.ensure_future(
+                    _image_cache.save(
+                        session, url=url, file_id=file_id, preserve_original=is_sticker_segment,
+                    )
+                )
+                image_tasks.append(task)
+                ordered_parts.append(task)
+                image_count += 1
 
     for seg in msg:
         if seg.type == "text":
@@ -382,7 +557,10 @@ async def _render_message(
                 ordered_parts.append(face_to_text(int(face_id)))
             except (ValueError, TypeError):
                 ordered_parts.append("«表情»")
-        elif seg.type == "image" and _vision_enabled and session is not None:
+        elif seg.type == "image" and session is not None and (
+            _vision_enabled
+            or str(seg.data.get("subType", seg.data.get("sub_type", "0"))) == "1"
+        ):
             if image_count >= _max_images_per_message:
                 ordered_parts.append("«图片»")
                 continue
@@ -390,7 +568,12 @@ async def _render_message(
             file_id = seg.data.get("file", "")
             if url and file_id:
                 file_id = file_id.split(".")[0] if "." in file_id else file_id
-                task = asyncio.ensure_future(_image_cache.save(session, url=url, file_id=file_id))
+                is_sticker_segment = str(seg.data.get("subType", seg.data.get("sub_type", "0"))) == "1"
+                task = asyncio.ensure_future(
+                    _image_cache.save(
+                        session, url=url, file_id=file_id, preserve_original=is_sticker_segment,
+                    )
+                )
                 image_tasks.append(task)
                 ordered_parts.append(task)
                 image_count += 1
@@ -478,12 +661,20 @@ async def collect_group_context(bot: Bot, event: GroupMessageEvent) -> None:
         content=content,
         message_id=event.message_id,
     )
+    if _meme_learner is not None and _meme_learner.observe(
+        group_id=group_id,
+        speaker=f"{nickname}({event.user_id})",
+        content=content,
+        recent=_timeline.get_pending(group_id),
+    ):
+        _llm._prompt.invalidate(group_id=group_id)
 
     is_sticker = any(
         seg.type == "image"
         and str(seg.data.get("subType", seg.data.get("sub_type", "0"))) == "1"
         for seg in event.get_message()
     )
+    await _auto_collect_stickers(bot, content, is_sticker, str(event.group_id))
     reply_sender = getattr(event.reply, "sender", None) if event.reply is not None else None
     reply_user_id = str(getattr(reply_sender, "user_id", "") or "")
     _scheduler.notify(
@@ -494,6 +685,54 @@ async def collect_group_context(bot: Bot, event: GroupMessageEvent) -> None:
         user_id=str(event.user_id),
         message_id=event.message_id,
     )
+
+
+async def _auto_collect_stickers(bot: Bot, content: Content, is_sticker: bool, group_id: str) -> None:
+    """Use vision metadata to collect incoming QQ stickers without model/tool permissions."""
+    if not _sticker_auto_collect or _sticker_store is None or _vision_client is None:
+        return
+    if _sticker_auto_collect_only_stickers and not is_sticker:
+        return
+    now = time.monotonic()
+    if now - _sticker_collect_last.get(group_id, 0.0) < _sticker_auto_collect_cooldown:
+        return
+    blocks = content if isinstance(content, list) else []
+    image_blocks = [b for b in blocks if isinstance(b, dict) and b.get("type") == "image_ref"]
+    if not image_blocks or len(_sticker_store.list_all()) >= _sticker_store.max_count:
+        return
+    _sticker_collect_last[group_id] = now
+    for block in image_blocks:
+        preview = block.get("path", "")
+        original = block.get("original_path", preview)
+        if not preview or not original:
+            continue
+        try:
+            pair = await _vision_client.describe_sticker(preview, block.get("media_type", "image/jpeg"))
+            if not pair:
+                continue
+            description, usage_hint = pair
+            data = Path(original).read_bytes()
+            sticker_id, is_new = _sticker_store.add(data, description, usage_hint, source="auto")
+            if is_new:
+                logger.info("auto sticker collected | group={} id={} description={}", group_id, sticker_id, description)
+                path = _sticker_store.resolve_path(sticker_id)
+                if path:
+                    ctx = ToolContext(bot=bot, user_id="", group_id=group_id)
+                    if await _deliver_sticker(ctx, path):
+                        _sticker_store.record_send(sticker_id)
+                        try:
+                            await bot.send_group_msg(
+                                group_id=int(group_id),
+                                message=(
+                                    f"已收录 {sticker_id}：{description}；"
+                                    f"适合在{usage_hint}时使用。有不对的地方告诉我改。"
+                                ),
+                            )
+                        except Exception:
+                            logger.warning("auto sticker description send failed | id={}", sticker_id, exc_info=True)
+            break
+        except (OSError, ValueError):
+            logger.debug("auto sticker collect skipped", exc_info=True)
 
 
 # ── 群禁言监听 ──
@@ -537,7 +776,25 @@ async def handle_private_chat(bot: Bot, event: MessageEvent) -> None:
     identity = _identity_mgr.resolve()
     ctx = ToolContext(bot=bot, user_id=str(event.user_id), group_id=None, session_id=sid)
 
+    # Login is security-sensitive and deterministic: do not rely on the LLM to select the tool.
+    command = user_content.strip() if isinstance(user_content, str) else ""
+    if command in {"/登录网易云", "/网易云登录"}:
+        if _music_client is None:
+            await private_chat.finish(Message("网易云音乐模块未启用，请检查 [music] 配置。"))
+        result = await MusicQrLoginTool(_music_client, _superusers).execute(ctx)
+        await private_chat.finish(Message(result))
+    if command in {"/检查网易云登录状态", "/检查登录状态"}:
+        if _music_client is None:
+            await private_chat.finish(Message("网易云音乐模块未启用，请检查 [music] 配置。"))
+        result = await MusicLoginStatusTool(_music_client, _superusers).execute(ctx)
+        await private_chat.finish(Message(result))
+
+    sent_segments: set[str] = set()
+
     async def send_segment(text: str) -> None:
+        if not text or text in sent_segments:
+            return
+        sent_segments.add(text)
         await bot.send(event, Message(text))
 
     reply: str | None = None
@@ -569,5 +826,7 @@ async def handle_private_chat(bot: Bot, event: MessageEvent) -> None:
             reply = "出错了，请稍后再试"
             break
 
-    if reply:
+    if reply and _sticker_sender is not None and not ctx.extra.get("sticker_sent"):
+        await _sticker_sender.execute_random(ctx)
+    if reply and reply not in sent_segments:
         await private_chat.finish(Message(reply))

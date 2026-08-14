@@ -18,6 +18,7 @@ _ENV_MAP: dict[str, str] = {
     "VISION_BASE_URL": "vision.base_url",
     "VISION_API_KEY": "vision.api_key",
     "VISION_MODEL": "vision.model",
+    "NETEASE_MUSIC_API_URL": "music.api_base_url",
 }
 
 # CLI 参数名 → dotted key（由 bot.py argparse 写入环境变量 _CLI_* 或直接传入 cli_overrides）

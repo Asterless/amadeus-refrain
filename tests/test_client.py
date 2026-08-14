@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 
 from src.identity.models import Identity
-from src.llm.client import LLMClient, _content_text, _fix_cq_codes, _resolve_image_refs, _to_anthropic_message, _ToolUse
+from src.llm.client import LLMClient, _content_text, _fix_cq_codes, _resolve_image_refs, _split_segments, _to_anthropic_message, _ToolUse
 from src.llm.prompt import PromptBuilder
 from src.llm.usage import UsageTracker
 from src.memory.group_timeline import GroupTimeline
@@ -546,3 +546,10 @@ async def test_resolve_image_refs_preserves_cache_control() -> None:
 ])
 def test_fix_cq_codes(raw: str, expected: str) -> None:
     assert _fix_cq_codes(raw) == expected
+
+
+def test_split_segments_separates_per_person_mentions() -> None:
+    assert _split_segments("[CQ:at,qq=1]你好\n[CQ:at,qq=2]你也好") == [
+        "[CQ:at,qq=1]你好",
+        "[CQ:at,qq=2]你也好",
+    ]

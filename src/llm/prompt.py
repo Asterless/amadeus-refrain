@@ -18,6 +18,7 @@ from src.identity.models import Identity
 from src.memory.memo_store import MemoStore
 
 if TYPE_CHECKING:
+    from src.meme.store import MemeStore
     from src.sticker.store import StickerStore
 
 
@@ -35,10 +36,12 @@ class PromptBuilder:
         instruction: str = "",
         admins: dict[str, str] | None = None,
         sticker_store: StickerStore | None = None,
+        meme_store: MemeStore | None = None,
     ) -> None:
         self._instruction = instruction
         self._admins = admins or {}
         self._sticker_store = sticker_store
+        self._meme_store = meme_store
         self._static_block: dict[str, Any] = {}
         self._block_cache: dict[str, list[dict[str, Any]]] = {}
 
@@ -103,6 +106,8 @@ class PromptBuilder:
 
         if self._sticker_store is not None:
             text += f"\n\n{self._sticker_store.format_prompt_view()}"
+        if self._meme_store is not None:
+            text += f"\n\n{self._meme_store.format_prompt_view(group_id=group_id)}"
 
         entity_block = {
             "type": "text",
@@ -113,6 +118,13 @@ class PromptBuilder:
         self._block_cache[key] = blocks
         logger.info("system blocks built | key={}", key)
         return blocks
+
+    def requester_context(self, user_id: str) -> str:
+        """Return uncached identity context for the current turn."""
+        if not user_id:
+            return ""
+        role = "管理员" if user_id in self._admins else "普通用户"
+        return f"【当前请求者】QQ号：{user_id}；身份：{role}。不要仅凭昵称判断身份。"
 
     def invalidate(
         self,

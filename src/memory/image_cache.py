@@ -41,6 +41,7 @@ class ImageCache:
         session: aiohttp.ClientSession,
         url: str,
         file_id: str,
+        preserve_original: bool = False,
     ) -> ImageRefBlock | None:
         """Download image, resize, cache to disk. Returns None on failure.
 
@@ -53,9 +54,10 @@ class ImageCache:
         path = self._path_for(file_id)
 
         # Cache hit — file already downloaded
-        if path.exists():
+        if path.exists() and not (preserve_original and not path.with_suffix(".gif").exists()):
             logger.debug("image cache hit | file_id={}", file_id)
-            return ImageRefBlock(type="image_ref", path=str(path), media_type="image/jpeg")
+            original = path.with_suffix(".gif")
+            return ImageRefBlock(type="image_ref", path=str(path), media_type="image/jpeg", original_path=str(original if original.exists() else path))
 
         async with self._sem:
             t0 = time.perf_counter()
@@ -88,6 +90,12 @@ class ImageCache:
         """Resize image and save to disk as JPEG."""
         import pyvips
 
+        original_path = path
+        if data[:6] in (b"GIF87a", b"GIF89a"):
+            original_path = path.with_suffix(".gif")
+            original_path.parent.mkdir(parents=True, exist_ok=True)
+            original_path.write_bytes(data)
+
         # pyvips loads only the first frame of animated GIFs by default
         img: Any = pyvips.Image.new_from_buffer(data, "")
 
@@ -101,7 +109,7 @@ class ImageCache:
         path.parent.mkdir(parents=True, exist_ok=True)
         img.jpegsave(str(path), Q=80, strip=True)
 
-        return ImageRefBlock(type="image_ref", path=str(path), media_type="image/jpeg")
+        return ImageRefBlock(type="image_ref", path=str(path), media_type="image/jpeg", original_path=str(original_path))
 
     async def load_as_base64(self, ref: ImageRefBlock | dict[str, Any]) -> dict[str, Any] | None:
         """Read image from disk and return an Anthropic image content block.

@@ -5,7 +5,7 @@ ImageRefBlock stores a disk path (not base64) to keep memory low.
 Conversion to Anthropic API format happens at request assembly time.
 """
 
-from typing import Literal, TypedDict
+from typing import Literal, NotRequired, TypedDict
 
 
 class TextBlock(TypedDict):
@@ -17,6 +17,7 @@ class ImageRefBlock(TypedDict):
     type: Literal["image_ref"]
     path: str  # disk path, e.g. "storage/image_cache/ab/ab3f7c.jpg"
     media_type: str  # e.g. "image/jpeg"
+    original_path: NotRequired[str]  # original downloaded file when a preview is used
 
 
 ContentBlock = TextBlock | ImageRefBlock

@@ -43,6 +43,7 @@ def test_load_defaults_without_file(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert cfg.group.debounce_seconds == 5.0
     assert cfg.group.batch_size == 10
     assert cfg.napcat.api_url == "http://localhost:29300"
+    assert cfg.music.api_base_url == "http://127.0.0.1:3000"
     assert cfg.admins == {}
 
 
@@ -125,6 +126,7 @@ api_url = "http://napcat-from-toml:29300"
     monkeypatch.setenv("LLM_API_KEY", "sk-from-env")
     monkeypatch.setenv("LLM_MODEL", "model-from-env")
     monkeypatch.setenv("NAPCAT_API_URL", "http://napcat-from-env:29300")
+    monkeypatch.setenv("NETEASE_MUSIC_API_URL", "http://music-api:3000")
 
     cfg = load_config(config_path=str(toml_file))
 
@@ -132,6 +134,7 @@ api_url = "http://napcat-from-toml:29300"
     assert cfg.llm.api_key == "sk-from-env"
     assert cfg.llm.model == "model-from-env"
     assert cfg.napcat.api_url == "http://napcat-from-env:29300"
+    assert cfg.music.api_base_url == "http://music-api:3000"
 
 
 def test_cli_overrides_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -260,6 +263,14 @@ def test_compact_config_defaults():
     assert c.compress_ratio == 0.5
     assert c.max_failures == 3
     assert c.cache_hit_warn == 90.0
+
+
+def test_meme_config_defaults() -> None:
+    cfg = BotConfig().meme
+    assert cfg.enabled is True
+    assert cfg.refresh_minutes == 15
+    assert "weibo" in cfg.platforms
+    assert cfg.storage_file == "storage/memes.json"
 
 
 def test_compact_config_rejects_invalid_ratio():
